@@ -49,4 +49,22 @@ export type { FoundSession, ListResult } from './core/store'
 
 export { saveImages, toDataUrl } from './core/attach'
 
+export { buildBrief, buildSummary } from './core/brief'
+export { latestNote, listNotes, saveNote } from './core/handoff'
+export type { NoteEntry, SavedNote } from './core/handoff'
+export { formatSearchResult, searchSessions } from './core/search'
+export type { SearchHit, SearchResult } from './core/search'
+
+export {
+  deinitProject,
+  detectAgents,
+  doctor,
+  initProject,
+  installAll,
+  mcpEntry,
+  mcpScript,
+  rulesBlock,
+  uninstallAll,
+} from './install'
+
 export { cleanUserText, gitRoot, isInjected, parseDataUrl, plain, projectName, sameRepo } from './util'

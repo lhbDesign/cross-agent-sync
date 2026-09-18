@@ -3,7 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 
-export const HOME = os.homedir()
+/** 用户主目录；可用 ASS_HOME 覆盖（测试 / 沙箱 / 想把数据放在别处时） */
+export const HOME = process.env.ASS_HOME || os.homedir()
 
 export function home(...segs: string[]): string {
   return path.join(HOME, ...segs)
@@ -172,6 +173,42 @@ export function readJsonFile<T>(file: string, fallback: T): T {
 export function writeJsonFile(file: string, data: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`)
+}
+
+/** 本地时间 `2026-09-18 13:20`；无效值给 `—` */
+export function fmtTime(ms: number | null | undefined): string {
+  if (!ms) return '—'
+  const d = new Date(ms)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** 文件名友好的短 slug */
+export function slugify(s: string, max = 40): string {
+  const t = String(s || '')
+    .replace(/[\u0000-\u001f]/g, '')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+  return (t || 'untitled').slice(0, max)
+}
+
+export function truncate(s: string, n: number): string {
+  const t = String(s ?? '')
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t
+}
+
+/** `7d` / `12h` / `30m` / ISO 日期 → 时间戳（毫秒） */
+export function parseSince(v: unknown): number | null {
+  if (v === null || v === undefined || v === '') return null
+  const m = /^(\d+)\s*([dhm])$/.exec(String(v).trim())
+  if (m) {
+    const n = Number(m[1])
+    const unit = m[2] === 'd' ? 86400000 : m[2] === 'h' ? 3600000 : 60000
+    return Date.now() - n * unit
+  }
+  const t = Date.parse(String(v))
+  return Number.isNaN(t) ? null : t
 }
 
 export function errMsg(e: unknown): string {

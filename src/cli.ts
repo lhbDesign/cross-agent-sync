@@ -1,11 +1,16 @@
 #!/usr/bin/env node
+import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import type { SessionMeta, Turn } from './types'
-import { ensureConfig, configPath, DATA_DIR, loadConfig, type Config } from './config'
-import { agentStatus, findSession, listSessions, readSession, resolveRef } from './core/store'
+import { DATA_DIR, configPath, ensureConfig, loadConfig, type Config } from './config'
+import { agentStatus, findSession, listSessions, readSession } from './core/store'
 import { saveImages } from './core/attach'
-import { plain } from './util'
+import { buildBrief } from './core/brief'
+import { latestNote, listNotes, saveNote } from './core/handoff'
+import { formatSearchResult, searchSessions } from './core/search'
+import { detectAgents, deinitProject, doctor, initProject, installAll, rulesBlock, uninstallAll } from './install'
+import { fmtTime, plain } from './util'
 
 const TTY = process.stdout.isTTY === true
 const c = {
@@ -22,35 +27,32 @@ interface Args {
   flags: Record<string, string | boolean>
 }
 
+const VALUE_FLAGS = ['repo', 'limit', 'agent', 'rounds', 'tail', 'since', 'out', 'summary', 'files', 'scan']
+
 function parseArgs(argv: string[]): Args {
-  const cmd = argv[0] && !argv[0].startsWith('-') ? argv[0] : 'status'
-  const rest = cmd === 'status' && argv[0] !== 'status' ? argv : argv.slice(1)
+  const first = argv[0]
+  const cmd = first && !first.startsWith('-') ? first : 'status'
+  const rest = cmd === 'status' && first !== 'status' ? argv : argv.slice(1)
   const positional: string[] = []
   const flags: Record<string, string | boolean> = {}
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i] as string
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split('=')
-      if (v !== undefined) flags[k as string] = v
+      const key = k as string
+      if (v !== undefined) flags[key] = v
       else {
         const next = rest[i + 1]
-        if (next && !next.startsWith('-') && ['repo', 'limit', 'agent', 'rounds', 'tail', 'since'].includes(k as string)) {
-          flags[k as string] = next
+        if (next && !next.startsWith('-') && VALUE_FLAGS.includes(key)) {
+          flags[key] = next
           i++
-        } else flags[k as string] = true
+        } else flags[key] = true
       }
     } else if (a.startsWith('-') && a.length === 2) {
       flags[a.slice(1)] = true
     } else positional.push(a)
   }
   return { cmd, positional, flags }
-}
-
-function fmtTime(ms: number | null | undefined): string {
-  if (!ms) return '—'
-  const d = new Date(ms)
-  const p = (n: number): string => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 function repoLabel(s: SessionMeta): string {
@@ -67,21 +69,45 @@ function printList(sessions: SessionMeta[], opts: { showRepo: boolean }): void {
     const idx = c.dim(String(i + 1).padStart(w, ' '))
     const agent = c.cyan(s.agent.padEnd(9))
     const time = fmtTime(s.updatedAt || s.startedAt)
-    const title = plain(s.title, 46)
     const turns = s.turns ? c.dim(`${s.turns}轮`) : ''
     const repo = opts.showRepo ? c.dim(` [${repoLabel(s)}]`) : ''
-    console.log(`${idx} ${agent} ${c.dim(time)}  ${title}${repo} ${turns}`)
+    console.log(`${idx} ${agent} ${c.dim(time)}  ${plain(s.title, 46)}${repo} ${turns}`)
     if (s.preview) console.log(`${' '.repeat(w)} ${c.dim(' '.repeat(9) + ' ' + plain(s.preview, 100))}`)
   })
 }
+
+function printTurns(turns: Turn[]): void {
+  for (const t of turns) {
+    const who = t.role === 'user' ? c.green('用户') : t.role === 'tool' ? c.dim('工具') : c.cyan('助手')
+    console.log('')
+    console.log(`${who} ${c.dim(t.at ? fmtTime(t.at) : '')}`)
+    const body = plain(t.text, 2000)
+    for (const line of body.split('\n')) console.log(`  ${line}`)
+    if (t.images?.length) console.log(`  ${c.yellow(`[${t.images.length} 张图片]`)}`)
+  }
+}
+
+// ---------------------------------------------------------------- 命令
 
 function cmdStatus(args: Args, cfg: Config): void {
   const repo = (args.flags.repo as string) || process.cwd()
   const limit = Number(args.flags.limit || cfg.defaultLimit || 15)
   const { sessions, errors } = listSessions({ repo, limit }, cfg)
-  const root = sessions[0]?.repo
-  console.log(c.bold(`仓库 ${root || repo}`))
+  console.log(c.bold(`仓库 ${sessions[0]?.repo || repo}`))
   console.log(c.dim(`配置 ${configPath()}   数据 ${DATA_DIR}`))
+
+  const note = latestNote(sessions[0]?.repo || repo)
+  if (note) {
+    console.log('')
+    console.log(c.bold(`上次收尾的记录（${fmtTime(note.entry.at)}，来自 ${note.entry.key}）`))
+    const body = note.content.replace(/^<!--[\s\S]*?-->\n/, '')
+    const preview = body.split('\n').slice(0, 18).join('\n')
+    console.log(c.dim('─'.repeat(60)))
+    console.log(preview)
+    if (body.split('\n').length > 18) console.log(c.dim(`… 完整内容见 ${note.file}`))
+    console.log(c.dim('─'.repeat(60)))
+  }
+
   console.log('')
   if (sessions.length === 0) {
     console.log(c.yellow('这个仓库还没有任何 agent 的会话记录。'))
@@ -93,7 +119,7 @@ function cmdStatus(args: Args, cfg: Config): void {
     console.log('')
     printList(sessions, { showRepo: false })
     console.log('')
-    console.log(c.dim(`继续某个会话：  ass show #1       把它最后一问搬到新 agent：  ass last #1`))
+    console.log(c.dim('继续某个会话：  ass show #1       把最后一问搬到新 agent：  ass last #1       生成交接摘要：  ass brief #1'))
   }
   if (errors.length) {
     console.log('')
@@ -122,6 +148,14 @@ function cmdList(args: Args, cfg: Config): void {
   if (errors.length) console.log(c.yellow(`\n读取失败：${errors.join('; ')}`))
 }
 
+function locate(ref: string | undefined, cfg: Config, fallbackRepo?: string): ReturnType<typeof findSession> {
+  if (ref) return findSession(ref, cfg)
+  const repo = fallbackRepo || process.cwd()
+  const { sessions } = listSessions({ repo, limit: 1 }, cfg)
+  const first = sessions[0]
+  return first ? findSession(first.key, cfg) : null
+}
+
 function cmdShow(args: Args, cfg: Config): void {
   const ref = args.positional[0]
   if (!ref) return usage('show 需要一个引用，例如 `ass show #1`')
@@ -148,34 +182,20 @@ function cmdShow(args: Args, cfg: Config): void {
   }
 }
 
-function printTurns(turns: Turn[]): void {
-  for (const t of turns) {
-    const who = t.role === 'user' ? c.green('用户') : t.role === 'tool' ? c.dim('工具') : c.cyan('助手')
-    console.log('')
-    console.log(`${who} ${c.dim(t.at ? fmtTime(t.at) : '')}`)
-    const body = t.text.length > 4000 && !process.stdout.isTTY ? t.text : plain(t.text, 2000)
-    for (const line of body.split('\n')) console.log(`  ${line}`)
-    if (t.images?.length) console.log(`  ${c.yellow(`[${t.images.length} 张图片]`)}`)
-  }
-}
-
 /** R3：把「另一个 agent 里的那一问」原样搬过来（含图片落盘） */
 function cmdLast(args: Args, cfg: Config): void {
-  const ref = args.positional[0] || '#1'
-  const found = findSession(ref, cfg)
-  if (!found) return usage(`没找到会话：${ref}`)
+  const found = locate(args.positional[0], cfg)
+  if (!found) return usage(`没找到会话：${args.positional[0] || process.cwd()}`)
   const rounds = Math.max(1, Number(args.flags.rounds || 1))
-  // 这里必须全量读：只读文件尾巴会漏掉更早的轮次（尤其是相隔很远的提问）
-  const turns = readSession(found)
-  const users = turns.filter((t) => t.role === 'user')
+  // 全量读：只读文件尾巴会漏掉更早的轮次（尤其是相隔很远的提问）
+  const users = readSession(found).filter((t) => t.role === 'user')
   const picked = users.slice(-rounds)
   if (picked.length === 0) return usage('这个会话里没有找到用户提问。')
 
-  const key = found.meta.key
   const imgPaths: string[] = []
   for (const t of picked) {
     if (!t.images?.length) continue
-    imgPaths.push(...saveImages(t.images, key, undefined, imgPaths.length + 1))
+    imgPaths.push(...saveImages(t.images, found.meta.key, undefined, imgPaths.length + 1))
   }
 
   if (args.flags.json) {
@@ -184,7 +204,7 @@ function cmdLast(args: Args, cfg: Config): void {
   }
 
   console.log(c.dim('━'.repeat(72)))
-  console.log(`${c.bold('来自')} ${found.meta.agentLabel} ${c.dim(`(${key}, ${fmtTime(found.meta.updatedAt)})`)}`)
+  console.log(`${c.bold('来自')} ${found.meta.agentLabel} ${c.dim(`(${found.meta.key}, ${fmtTime(found.meta.updatedAt)})`)}`)
   if (found.meta.repo) console.log(`${c.bold('仓库')} ${found.meta.repo}`)
   if (imgPaths.length) {
     console.log(`${c.bold('图片')} ${imgPaths.length} 张已落盘：`)
@@ -194,19 +214,81 @@ function cmdLast(args: Args, cfg: Config): void {
   picked.forEach((t, i) => {
     if (picked.length > 1) console.log(`\n${c.dim(`【第 ${i + 1} 问】`)}`)
     console.log('')
-    console.log(t.text || c.dim(`(这一问只有 ${t.images?.length ?? 0} 张图片，路径见上面)`) + t.text)
+    console.log(t.text || c.dim(`(这一问只有 ${t.images?.length ?? 0} 张图片，路径见上面)`))
   })
   console.log('')
   console.log(c.dim('━'.repeat(72)))
   console.log(c.dim('把上面这段直接发给新 agent 即可继续；有图片的话把路径一起给它。'))
 }
 
+function cmdBrief(args: Args, cfg: Config): void {
+  const found = locate(args.positional[0], cfg)
+  if (!found) return usage(`没找到会话：${args.positional[0] || process.cwd()}`)
+  const turns = readSession(found)
+  const md = buildBrief(found.meta, turns, {
+    maxFiles: Number(args.flags.files || 25),
+    tailMessages: Number(args.flags.tail || 4),
+  })
+  const out = args.flags.out as string | undefined
+  if (out) {
+    fs.writeFileSync(out, md)
+    console.log(`已写入 ${out}（${md.length} 字符）`)
+    return
+  }
+  console.log(md)
+}
+
+function cmdNote(args: Args, cfg: Config): void {
+  const repo = (args.flags.repo as string) || process.cwd()
+  const found = locate(args.positional[0], cfg, repo)
+  if (!found) return usage('没找到可以收尾的会话。')
+  const turns = readSession(found)
+  const saved = saveNote(found.meta, turns, args.flags.summary as string | undefined, repo)
+  console.log(c.green('已保存交接记录'))
+  console.log(`  来源会话   ${found.meta.key}`)
+  console.log(`  文件       ${saved.file}`)
+  console.log(`  下次入口   ${path.dirname(saved.latestFile)}/latest.md`)
+  if (args.flags.json) console.log(JSON.stringify({ file: saved.file, slug: saved.slug }, null, 2))
+}
+
+function cmdSearch(args: Args, cfg: Config): void {
+  const q = args.positional.join(' ')
+  if (!q) return usage('search 需要一个关键词：`ass search "点击穿透"`')
+  const r = searchSessions(
+    q,
+    {
+      repo: (args.flags.repo as string) || process.cwd(),
+      allRepos: Boolean(args.flags.all),
+      limit: Number(args.flags.limit || 8),
+      scan: Number(args.flags.scan || 60),
+    },
+    cfg,
+  )
+  console.log(args.flags.json ? JSON.stringify(r, null, 2) : formatSearchResult(r))
+}
+
+function cmdNotes(args: Args): void {
+  const notes = listNotes()
+  if (args.flags.json) {
+    console.log(JSON.stringify(notes, null, 2))
+    return
+  }
+  if (!notes.length) {
+    console.log(c.dim('还没有保存过任何交接记录。'))
+    return
+  }
+  for (const n of notes) console.log(`${c.dim(fmtTime(n.entry.at))}  ${c.cyan(n.entry.project.padEnd(28))} ${n.entry.repo}`)
+}
+
 function cmdAgents(args: Args, cfg: Config): void {
   const status = agentStatus(cfg)
+  const detected = detectAgents()
   for (const { adapter, available, found, error } of status) {
     const mark = available ? c.green('●') : c.dim('○')
     const state = error ? c.yellow(`读取失败: ${error}`) : available ? c.dim(`${found} 个会话`) : c.dim('未安装 / 没有数据')
-    console.log(`${mark} ${c.cyan(adapter.id.padEnd(10))} ${adapter.label.padEnd(14)} ${state}`)
+    const hook = detected.find((d) => d.id === adapter.id)
+    const hooked = hook?.installed ? c.green(' [MCP 已接入]') : hook?.exists ? c.dim(' [MCP 未接入]') : ''
+    console.log(`${mark} ${c.cyan(adapter.id.padEnd(10))} ${adapter.label.padEnd(14)} ${state}${hooked}`)
     for (const s of adapter.sources()) console.log(`  ${c.dim(s)}`)
     if (!available && adapter.hint) console.log(`  ${c.dim(adapter.hint)}`)
   }
@@ -244,10 +326,58 @@ function cmdConfig(args: Args): void {
   console.log(c.dim(JSON.stringify(loadConfig(), null, 2)))
 }
 
+const ACTION_MARK: Record<string, string> = {
+  created: '＋ 新建',
+  updated: '✎ 更新',
+  appended: '✎ 追加',
+  unchanged: '= 无需改动',
+  removed: '－ 摘除',
+  skipped: '· 跳过',
+  missing: '· 未安装',
+  failed: '✗ 失败',
+  manual: '! 需手工',
+}
+
+function printSteps(title: string, steps: { target: string; path: string; action: string; detail?: string }[]): void {
+  console.log(c.bold(title))
+  for (const s of steps) {
+    const mark = ACTION_MARK[s.action] ?? s.action
+    const color = s.action === 'failed' ? c.yellow : s.action === 'unchanged' || s.action === 'skipped' || s.action === 'missing' ? c.dim : c.green
+    console.log(`  ${color(mark.padEnd(12))} ${c.cyan(s.target.padEnd(10))} ${c.dim(s.path)}${s.detail ? `  ${c.dim(s.detail)}` : ''}`)
+  }
+}
+
+function cmdInstall(args: Args): void {
+  if (args.flags.rules) {
+    console.log(rulesBlock())
+    return
+  }
+  const steps = installAll({ dryRun: Boolean(args.flags['dry-run']) })
+  printSteps(`${args.flags['dry-run'] ? '[dry-run] ' : ''}agent-session-sync install`, steps)
+  console.log('')
+  console.log(c.dim('已接入 MCP 的 agent，重启后即可在会话里调用 session_* 工具；'))
+  console.log(c.dim('规则块已写进全局 CLAUDE.md / AGENTS.md，新会话开场会主动问你「要不要同步之前的会话」。'))
+  console.log(c.dim('Cursor / Trae 这类需要手工贴的地方：ass rules'))
+}
+
+function cmdUninstall(args: Args): void {
+  const steps = uninstallAll({ dryRun: Boolean(args.flags['dry-run']) })
+  printSteps(`${args.flags['dry-run'] ? '[dry-run] ' : ''}agent-session-sync uninstall`, steps)
+  console.log('')
+  console.log(c.dim('会话数据（缓存 / 附件 / 交接记录）没有被删除，需要的用 ass notes 找回。'))
+}
+
+function cmdInit(args: Args): void {
+  const dir = path.resolve(args.positional[0] || process.cwd())
+  const dry = Boolean(args.flags['dry-run'])
+  const steps = args.flags.undo ? deinitProject(dir, { dryRun: dry }) : initProject(dir, { dryRun: dry })
+  printSteps(`${dry ? '[dry-run] ' : ''}项目级规则 → ${dir}`, steps)
+  if (!dry) console.log(c.dim('\n（这些文件都在 git 里未跟踪；不想要了执行 ass init --undo）'))
+}
+
 function cmdDoctor(args: Args, cfg: Config): void {
   console.log(c.bold('环境'))
-  console.log(`  node        ${process.version}`)
-  console.log(`  平台        ${process.platform}`)
+  for (const line of doctor()) console.log(`  ${line}`)
   console.log(`  配置        ${configPath()}`)
   console.log(`  数据        ${DATA_DIR}`)
   console.log('')
@@ -257,14 +387,26 @@ function cmdDoctor(args: Args, cfg: Config): void {
 
 function usage(msg?: string): void {
   if (msg) console.log(c.yellow(msg) + '\n')
-  console.log(`${c.bold('agent-session-sync')} — 跨 agent 会话同步
+  console.log(`${c.bold('agent-session-sync (ass)')} — 跨 agent 会话同步
 
-${c.bold('用法')}
-  ass                      看当前仓库有哪些 agent 的会话
+${c.bold('看历史')}
+  ass                      当前仓库：上次收尾记录 + 最近会话
   ass list [选项]           列出会话（--all 跨仓库，--agent claude，--limit 20，--json）
   ass show <引用>           看某个会话（--full 全部，--tail 6 最后 N 条）
-  ass last [引用]           把它的最后一问原样搬过来（--rounds 3 连问多轮，含图片）
-  ass agents               本机探测到哪些 agent、数据源在哪
+  ass search <关键词>       在最近会话正文里全文搜索（--all 跨仓库，--scan 60）
+
+${c.bold('搬上下文')}
+  ass last [引用]           把最后一问原样搬过来（--rounds 3 连问多轮，含图片落盘）
+  ass brief [引用]          生成交接摘要 Markdown（--out 文件.md，--tail 4，--files 25）
+  ass note [引用]           收尾：把摘要存进本仓库，下次任何 agent 进来都能看到
+  ass notes                已保存的交接记录列表
+
+${c.bold('接入 / 维护')}
+  ass install              把 MCP + 规则写进本机各 agent（--dry-run 只看不改）
+  ass rules                打印规则原文（Cursor/Trae 这些要手工贴的用）
+  ass uninstall            摘掉 MCP + 规则（不动你的会话数据）
+  ass init [目录]          项目级注入规则（--dry-run / --undo）
+  ass agents               探测到哪些 agent、数据源在哪、MCP 是否已接入
   ass repos                有历史的仓库列表
   ass config [--init]      打印/初始化配置文件
   ass doctor               自检
@@ -295,12 +437,26 @@ function main(): void {
       return cmdShow(args, cfg)
     case 'last':
       return cmdLast(args, cfg)
+    case 'brief':
+      return cmdBrief(args, cfg)
+    case 'note':
+      return cmdNote(args, cfg)
+    case 'notes':
+      return cmdNotes(args)
+    case 'search':
+      return cmdSearch(args, cfg)
     case 'agents':
       return cmdAgents(args, cfg)
     case 'repos':
       return cmdRepos(args, cfg)
     case 'config':
       return cmdConfig(args)
+    case 'install':
+      return cmdInstall(args)
+    case 'uninstall':
+      return cmdUninstall(args)
+    case 'init':
+      return cmdInit(args)
     case 'doctor':
       return cmdDoctor(args, cfg)
     default:
@@ -314,5 +470,3 @@ try {
   console.error(c.yellow(`出错了：${e instanceof Error ? e.message : String(e)}`))
   process.exitCode = 1
 }
-
-export { resolveRef }
