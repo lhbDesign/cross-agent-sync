@@ -48,5 +48,5 @@
 - Gemini CLI 的会话记录里没有仓库路径，只能通过 `ass list --all` 看到，无法按仓库过滤。
 - Trae / Windsurf / VS Code Copilot Chat 的存储结构还没摸清，`ass detect` 能找到库文件但不解析。
 
-[Unreleased]: https://github.com/lihaibo/agent-session-sync/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/lihaibo/agent-session-sync/releases/tag/v0.1.0
+[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/lhbDesign/cross-agent-sync/releases/tag/v0.1.0
