@@ -31,9 +31,9 @@
     "node": ">=18.17.0"
   },
   "bin": {
-    "ass": "./dist/cli.js",
-    "cross-agent-sync": "./dist/cli.js",
-    "cross-agent-sync-mcp": "./dist/mcp.js"
+    "ass": "dist/cli.js",
+    "cross-agent-sync": "dist/cli.js",
+    "cross-agent-sync-mcp": "dist/mcp.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -49,8 +49,21 @@ export type { FoundSession, ListResult } from './core/store'
 
 export { saveImages, toDataUrl } from './core/attach'
 
-export { buildBrief, buildSummary } from './core/brief'
+export { buildBrief, buildSummary, extractDecisions, extractNextSteps, pickFiles } from './core/brief'
+export type { BriefOptions } from './core/brief'
 export { latestNote, listNotes, saveNote } from './core/handoff'
+export {
+  addContext,
+  contextFile,
+  contextLine,
+  contextMarkdown,
+  contextStats,
+  KIND_LABEL,
+  readContext,
+  repoSlug,
+  updateContext,
+} from './core/context'
+export type { ContextEntry, ContextKind, ContextStats, RepoContext } from './core/context'
 export type { NoteEntry, SavedNote } from './core/handoff'
 export { formatSearchResult, searchSessions } from './core/search'
 export type { SearchHit, SearchResult } from './core/search'

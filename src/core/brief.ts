@@ -1,5 +1,6 @@
 import type { SessionMeta, Turn } from '../types'
 import { plain, truncate } from '../util'
+import { contextMarkdown } from './context'
 
 /**
  * 交接摘要：把一次会话压成「下一个 agent 看完就能接着干」的 Markdown。
@@ -82,7 +83,59 @@ export function extractNextSteps(turns: Turn[], max = 8): { steps: string[]; kin
 
 const IGNORE_LINE = /^(?:\u25b8|\||```|\u2500|\+|-{2,}|\$ |>|node |npm |pnpm |git |\d+\s*\|)/
 
-/** 只保留像「人话」的行：丢掉工具输出、代码、表格、命令行 */
+/** 决策 / 踩坑 的信号词（宁缺毋滥：太宽会把整段叙述都抓进来） */
+const PIT_RE = /(不行|不可行|不生效|没生效|会失败|已失败|回滚了|撤销了|踩坑|这个坑|试过了|试了不行|别用|不要用|避免使用|走了弯路|绕了远路|会崩|会炸)/
+const DECIDE_RE = /(决定把|决定用|决定改|决定采用|改成|换成|改为|采用|统一用|约定|结论是|定为|最终用|最终改)/
+
+/**
+ * 从对话里**猜**哪些是决策、哪些是踩过的坑 —— 兜底用。
+ * 真正可靠的是 agent 用 session_remember 主动记（那份会置顶显示，见 contextMarkdown）。
+ *
+ * 宁可少抓也不要抓错：信号词收紧、只收短句、跳过整段叙述、跳过第一条用户消息（那是原始目标，上面已经有了）。
+ */
+export function extractDecisions(turns: Turn[], max = 6): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  let firstUserSkipped = false
+
+  const scan = (t: Turn): boolean => {
+    for (const rawLine of String(t.text || '').split('\n')) {
+      const raw = rawLine.trim()
+      // 只认「列表项」：成篇叙述里几乎不可能出现结构化条目，
+      // 而真正的结论/决策通常会被 agent 写成 bullet
+      if (!/^(?:[-*+]|\d+[.)]|\[[ x]\])\s+\S/.test(raw)) continue
+      const line = raw
+        .replace(/^(?:[-*+]|\d+[.)]|\[[ x]\])\s*/, '')
+        .replace(/^#+\s*/, '')
+        .replace(/\*\*/g, '')
+      if (line.length < 8 || line.length > 140) continue
+      if (IGNORE_LINE.test(line) || /^https?:\/\//.test(line)) continue
+      if (/[{};]\s*$/.test(line) || line.startsWith('|') || line.startsWith('\u25b8')) continue
+      if (!PIT_RE.test(line) && !DECIDE_RE.test(line)) continue
+      const key = line.slice(0, 40)
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(plain(line, 160))
+      if (out.length >= max) return false
+    }
+    return true
+  }
+
+  // 先看用户说的（短、指令性强），再看助手说的
+  for (const t of turns) {
+    if (t.role !== 'user') continue
+    if (!firstUserSkipped) {
+      firstUserSkipped = true
+      continue
+    }
+    if (!scan(t)) return out
+  }
+  for (const t of turns) {
+    if (t.role !== 'assistant') continue
+    if (!scan(t)) return out
+  }
+  return out
+}
 function proseLines(text: string): string[] {
   return String(text)
     .split('\n')
@@ -117,6 +170,13 @@ function assistantHighlights(turns: Turn[], max = 8): string[] {
 }
 
 export interface BriefOptions {
+  /**
+   * 是否附上「从对话里猜的决策/踩坑」。
+   * 默认 false：实测精度不够 —— 一个猜错的「决策」比没有更危险，
+   * 而可靠的通道是 agent 干活时用 session_remember 主动记（那份会置顶）。
+   * 想看看猜成什么样：ass brief --guess
+   */
+  guess?: boolean
   maxFiles?: number
   tailMessages?: number
   /** 会话里被改过的文件（adapter 拿得到的话），会加权 */
@@ -139,6 +199,13 @@ export function buildBrief(meta: SessionMeta, turns: Turn[], opts: BriefOptions 
   if (meta.model) L.push(`| 模型 | \`${meta.model}\` |`)
   L.push(`| 规模 | ${users.length} 轮用户输入 / ${turns.length} 条消息 |`)
   L.push('')
+
+  // ① agent 主动记录的（可信）—— 直接置顶
+  const ctxMd = contextMarkdown(meta.repo || meta.cwd || '')
+  if (ctxMd) {
+    L.push(ctxMd)
+    L.push('')
+  }
 
   if (users.length) {
     L.push('## 原始目标（用户最初的原话）')
@@ -169,6 +236,17 @@ export function buildBrief(meta: SessionMeta, turns: Turn[], opts: BriefOptions 
     L.push('')
     for (const h of highlights) L.push(`- ${h}`)
     L.push('')
+  }
+
+  // ② 从对话里**猜**的决策 / 踩坑 —— 默认不出（见 extractDecisions 的注释）
+  if (opts.guess) {
+    const guessed = extractDecisions(turns)
+    if (guessed.length) {
+      L.push('## 决策与踩坑（从对话里推测，未经确认，仅供参考）')
+      L.push('')
+      for (const g of guessed) L.push(`- ${g}`)
+      L.push('')
+    }
   }
 
   const { steps, kind } = extractNextSteps(turns)

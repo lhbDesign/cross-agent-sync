@@ -23,6 +23,7 @@
 | 连问多轮一起搬 | `ass last #1 --rounds 3` |
 | **生成交接摘要**（目标 / 时间线 / 文件 / 结论 / 待办） | `ass brief #1` · `session_handoff` |
 | **收尾存档**，下次任何 agent 一进来就能看到 | `ass note` · `session_note` · `session_status` |
+| **记录决策 / 踩坑 / 约束 / 待办**，置顶给下一个 agent | `ass context` · `session_remember` |
 | 跨 agent 全文搜索 | `ass search "点击穿透"` · `session_search` |
 | 一键把 MCP + 规则接进本机各 agent | `ass install` |
 | **自检索**：扫盘找出本机所有可能的 agent | `ass detect` · `session_detect` |
@@ -90,7 +91,23 @@ ass last #1 --rounds 2
 <原来的提问原文>
 ```
 
-### 场景 3：收尾存档，下次换 agent 无缝接上
+### 场景 3：把「为什么这么决定」和「这条路走不通」记下来
+
+这一层比自动摘要重要得多 —— 从对话里猜"当时为什么这么定"很不靠谱，
+但 agent 亲手记的一句会**置顶**出现在之后每个 agent 的交接摘要里：
+
+```bash
+ass context --decision "接口错误统一走 msg 字段，不再各自判断报文类型"
+ass context --dead-end  "在 axios 拦截器里做重试会导致 refresh 死循环，已验证不可行"
+ass context --constraint "不要改旧版 SSO 的接口签名"
+ass context --todo      "需求 5：首页表格换虚拟滚动"
+ass context                        # 看当前记了什么
+ass context --done c4              # 做完勾掉
+```
+
+装了 MCP 之后，agent 会在干活过程中自己调 `session_remember` 记这些（规则块里写了纪律）。
+
+### 场景 4：收尾存档，下次换 agent 无缝接上
 
 ```bash
 ass note --summary "卡在滑动验证码的接口联调，下一步做服务端校验"
@@ -98,7 +115,7 @@ ass note --summary "卡在滑动验证码的接口联调，下一步做服务端
 
 之后**任何 agent** 一进这个仓库，`ass` / `session_status` 都会直接把这份摘要顶到最前面。
 
-### 场景 4：让 agent 自己会用（MCP）
+### 场景 5：让 agent 自己会用（MCP）
 
 ```bash
 ass install          # 一键写 MCP 配置 + 全局规则块（先看：ass install --dry-run）
@@ -109,6 +126,22 @@ ass install          # 一键写 MCP 配置 + 全局规则块（先看：ass ins
 不想要了：`ass uninstall`（只摘 MCP 和规则，**不动**你的会话数据）。
 
 ---
+
+## 两层上下文：自动读 + 主动记
+
+这个工具刻意分两层，因为它们的可信度完全不同：
+
+| 层 | 来源 | 可信度 | 谁负责 |
+| --- | --- | --- | --- |
+| **主动记录** | agent 干活时调 `session_remember` / 你敲 `ass context` | 高 —— 是当事人的判断 | 置顶显示在摘要最前面 |
+| **自动摘要** | 从原始对话里启发式抽取（目标 / 时间线 / 涉及文件 / 结论 / 待办） | 中 —— 可能漏、可能偏 | `ass brief` / `session_handoff` |
+| **原始记录** | 各 agent 自己的会话文件（只读） | 事实 | `ass show` / `ass search` / `session_read` |
+
+为什么不做「从对话里自动猜决策」当作默认？我实测过两版：放宽了会把整段叙述抓进来，
+收紧了又什么都抓不到 —— 一个**猜错的"决策"比没有更危险**，因为下一个 agent 会当真。
+所以它被降级成 `ass brief --guess`（默认关，且标注"未经确认"）。
+
+真正可靠的通道只有一条：**干活的时候顺手记一句**。所以规则块里专门写了这条纪律。
 
 ## 支持的 agent
 
@@ -269,9 +302,13 @@ ass show <引用>           看某个会话（--full 全部，--tail 6 最后 N 
 ass search <关键词>       在最近会话正文里全文搜索（--all，--scan 60）
 
 ass last [引用]           把最后一问原样搬过来（--rounds 3，含图片落盘）
-ass brief [引用]          生成交接摘要 Markdown（--out 文件.md）
+ass brief [引用]          生成交接摘要 Markdown（--out 文件.md；--guess 附上猜测内容，默认关）
 ass note [引用]           收尾：把摘要存进本仓库（--summary "下一步做 X"）
 ass notes                已保存的交接记录列表
+
+ass context              看/记 决策·踩坑·约束·待办
+                         --decision/--dead-end/--constraint/--todo "…" 记一条
+                         --done c4 勾掉待办，--remove c4 删除，--all 连已完成一起看
 
 ass install              接入 MCP + 全局规则（--dry-run 只看不改）
 ass rules                打印规则原文（Cursor/Trae 要手工贴的用）
@@ -295,6 +332,7 @@ ass doctor               自检
 | `session_last` | 把上一问（含图片）原样搬到当前 agent |
 | `session_search` | 跨会话全文搜索 |
 | `session_note` | 保存交接摘要（收尾时用） |
+| `session_remember` | 记录决策 / 踩坑 / 约束 / 待办（**干活过程中就调**） |
 | `session_repos` | 哪些仓库有历史 |
 | `session_detect` | 扫盘找出本机所有可能的 agent |
 
@@ -363,7 +401,11 @@ src/cli.ts          命令行          src/mcp.ts   MCP server（规划中）
 - [x] **M2** 交接摘要（brief）+ MCP server + 收尾记录（note）+ `ass install`
 - [x] **M3** 图片搬运打通全部内置 agent（Claude / Codex 内联 base64，OpenCode data URL，Cursor 附件文件）
 - [x] **M4** 自检索 `ass detect`（含可接入草案）+ 项目级规则注入 `ass init --dry-run/--undo` + 自定义 agent
-- [ ] **M5** 打包发布：npm publish、CI、CHANGELOG
+- [x] **P0** 决策/踩坑通道：`session_remember` + `ass context`（置顶进交接摘要）
+- [x] **P4** 规则块重写：加上「干活过程中随手记」「收尾落状态」的纪律
+- [ ] **P1** 「任务/工作流」：把跨 agent 的多次会话绑成一个任务，`ass resume <任务>`
+- [ ] **P2** 退场钩子：`ass hook install`，收尾自动落 note（不靠 agent 自觉）
+- [ ] **M5** 打包发布：npm publish、CI
 - [ ] 待摸清：Trae / Windsurf / VS Code Copilot Chat 的存储结构（`ass detect` 已能找到库文件）
 
 ## License

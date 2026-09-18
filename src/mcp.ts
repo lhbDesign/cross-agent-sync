@@ -6,6 +6,7 @@ import readline from 'node:readline'
 import { loadConfig, type Config } from './config'
 import { buildBrief, buildSummary } from './core/brief'
 import { latestNote, listNotes, saveNote } from './core/handoff'
+import { addContext, contextMarkdown, readContext, updateContext } from './core/context'
 import { formatSearchResult, searchSessions } from './core/search'
 import { findSession, listSessions, readSession } from './core/store'
 import { saveImages } from './core/attach'
@@ -13,6 +14,7 @@ import { detectSources } from './detect'
 import { maybeReexec } from './bootstrap'
 import { fmtTime, parseSince, plain, truncate } from './util'
 import type { Turn } from './types'
+import type { ContextKind } from './core/context'
 
 const VERSION = '0.1.0'
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
@@ -94,6 +96,11 @@ const TOOLS: ToolDef[] = [
       const out: string[] = []
       out.push(`仓库 \`${repo}\``)
       out.push('')
+      const ctx = contextMarkdown(repo)
+      if (ctx) {
+        out.push(ctx)
+        out.push('')
+      }
       if (note) {
         out.push(`## 上次收尾留下的交接记录（${fmtTime(note.entry.at)}，来自 ${note.entry.key}）`)
         out.push('')
@@ -308,6 +315,46 @@ const TOOLS: ToolDef[] = [
         `- 文件：\`${saved.file}\`\n- 下次一进这个仓库就能看到（latest.md / session_status）\n\n` +
         `摘要预览：\n\n${truncate(saved.md, 1200)}`
       )
+    },
+  },
+  {
+    name: 'session_remember',
+    description:
+      'Record a durable, structured note about THIS repository so that every agent — including future sessions of ' +
+      'yourself — sees it. Use it DURING work (not only at the end): right after you make an architectural decision, ' +
+      'or discover an approach that does NOT work (so nobody repeats it). These notes are shown at the TOP of every ' +
+      'handoff, which makes them more valuable than any auto-summary.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        decision: { type: 'string', description: 'A decision and why, e.g. "token 改用 refresh token 轮换，因为旧接口不支持并发刷新"' },
+        dead_end: { type: 'string', description: 'An approach that does NOT work / was reverted, so the next agent does not retry it' },
+        constraint: { type: 'string', description: 'A rule that must not be broken, e.g. "不要改旧版 SSO 的接口"' },
+        todo: { type: 'string', description: 'Something still to do' },
+        note: { type: 'string', description: 'Anything else worth persisting' },
+        done: { type: 'string', description: 'Mark a recorded todo as done, by its id (e.g. "c4")' },
+        remove: { type: 'string', description: 'Delete an entry by its id' },
+        repo: { type: 'string', description: 'Repository (defaults to the current working directory)' },
+      },
+    },
+    call(args) {
+      const repo = repoOf(args)
+      const kinds: [string, ContextKind][] = [
+        ['decision', 'decision'],
+        ['dead_end', 'dead-end'],
+        ['constraint', 'constraint'],
+        ['todo', 'todo'],
+        ['note', 'note'],
+      ]
+      const items = kinds
+        .map(([flag, kind]) => ({ kind, text: String(args[flag] ?? '').trim(), source: 'agent' }))
+        .filter((x) => x.text)
+      if (items.length) addContext(repo, items)
+      if (typeof args.done === 'string' && args.done.trim()) updateContext(repo, args.done.trim(), { done: true })
+      if (typeof args.remove === 'string' && args.remove.trim()) updateContext(repo, args.remove.trim(), { remove: true })
+      const md = contextMarkdown(repo)
+      if (!md) return `没有记录任何内容。请至少给一个 decision / dead_end / constraint / todo。\n（仓库：${repo}）`
+      return `已记录。这个仓库当前的上下文：\n\n${md}`
     },
   },
   {

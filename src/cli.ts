@@ -8,6 +8,7 @@ import { agentStatus, findSession, listSessions, readSession } from './core/stor
 import { saveImages } from './core/attach'
 import { buildBrief } from './core/brief'
 import { latestNote, listNotes, saveNote } from './core/handoff'
+import { addContext, contextFile, contextLine, contextMarkdown, KIND_LABEL, readContext, updateContext, type ContextKind } from './core/context'
 import { formatSearchResult, searchSessions } from './core/search'
 import { detectAgents, deinitProject, doctor, initProject, installAll, rulesBlock, uninstallAll } from './install'
 import { applyDetected, detectSources } from './detect'
@@ -29,7 +30,21 @@ interface Args {
   flags: Record<string, string | boolean>
 }
 
-const VALUE_FLAGS = ['repo', 'limit', 'agent', 'rounds', 'tail', 'since', 'out', 'summary', 'files', 'scan']
+const VALUE_FLAGS = [
+  'repo', 'limit', 'agent', 'rounds', 'tail', 'since', 'out', 'summary', 'files', 'scan',
+  'decision', 'decide', 'dead-end', 'deadend', 'constraint', 'todo', 'note', 'done', 'remove',
+]
+
+/** 记录类参数：flag 名 → 条目类型 */
+const CONTEXT_FLAGS: [string, ContextKind][] = [
+  ['decision', 'decision'],
+  ['decide', 'decision'],
+  ['dead-end', 'dead-end'],
+  ['deadend', 'dead-end'],
+  ['constraint', 'constraint'],
+  ['todo', 'todo'],
+  ['note', 'note'],
+]
 
 function parseArgs(argv: string[]): Args {
   const first = argv[0]
@@ -99,6 +114,9 @@ function cmdStatus(args: Args, cfg: Config): void {
   const { sessions, errors } = listSessions({ repo, limit }, cfg)
   console.log(c.bold(`仓库 ${sessions[0]?.repo || repo}`))
   console.log(c.dim(`配置 ${configPath()}   数据 ${DATA_DIR}`))
+
+  const ctxLine = contextLine(sessions[0]?.repo || repo)
+  if (ctxLine) console.log(`记录着的上下文：${c.cyan(ctxLine)}   ${c.dim('（ass context 看详情）')}`)
 
   const note = latestNote(sessions[0]?.repo || repo)
   if (note) {
@@ -232,6 +250,7 @@ function cmdBrief(args: Args, cfg: Config): void {
   const md = buildBrief(found.meta, turns, {
     maxFiles: Number(args.flags.files || 25),
     tailMessages: Number(args.flags.tail || 4),
+    guess: Boolean(args.flags.guess),
   })
   const out = args.flags.out as string | undefined
   if (out) {
@@ -244,8 +263,19 @@ function cmdBrief(args: Args, cfg: Config): void {
 
 function cmdNote(args: Args, cfg: Config): void {
   const repo = (args.flags.repo as string) || process.cwd()
+  const items = CONTEXT_FLAGS.map(([flag, kind]) => ({ kind, text: String(args.flags[flag] ?? '').trim(), source: 'ass note' })).filter((x) => x.text)
+  if (items.length) {
+    const { added } = addContext(repo, items)
+    for (const a of added) console.log(`${c.green('已记录')} ${c.dim(a.id)} [${KIND_LABEL[a.kind]}] ${a.text}`)
+  }
   const found = locate(args.positional[0], cfg, repo)
-  if (!found) return usage('没找到可以收尾的会话。')
+  if (!found) {
+    if (items.length) {
+      console.log(c.dim(`\n（只记录了上下文，没有可收尾的会话。文件：${contextFile(repo)}）`))
+      return
+    }
+    return usage('没找到可以收尾的会话。')
+  }
   const turns = readSession(found)
   const saved = saveNote(found.meta, turns, args.flags.summary as string | undefined, repo)
   console.log(c.green('已保存交接记录'))
@@ -253,6 +283,51 @@ function cmdNote(args: Args, cfg: Config): void {
   console.log(`  文件       ${saved.file}`)
   console.log(`  下次入口   ${path.dirname(saved.latestFile)}/latest.md`)
   if (args.flags.json) console.log(JSON.stringify({ file: saved.file, slug: saved.slug }, null, 2))
+}
+
+function cmdContext(args: Args, cfg: Config): void {
+  const repo = path.resolve((args.flags.repo as string) || process.cwd())
+  const items = CONTEXT_FLAGS.map(([flag, kind]) => ({ kind, text: String(args.flags[flag] ?? '').trim(), source: 'ass' })).filter((x) => x.text)
+
+  if (items.length) {
+    const { added, skipped } = addContext(repo, items)
+    for (const a of added) console.log(`${c.green('已记录')} ${c.dim(a.id)} ${c.dim(`[${KIND_LABEL[a.kind]}]`)} ${a.text}`)
+    if (skipped) console.log(c.dim(`（${skipped} 条重复，已跳过）`))
+    console.log('')
+  }
+  if (typeof args.flags.done === 'string') {
+    const e = updateContext(repo, args.flags.done, { done: true })
+    console.log(e ? `${c.green('已完成')} ${e.id} ${e.text}` : c.yellow(`没有 id 为 ${args.flags.done} 的条目`))
+    console.log('')
+  }
+  if (typeof args.flags.remove === 'string') {
+    const e = updateContext(repo, args.flags.remove, { remove: true })
+    console.log(e ? `${c.yellow('已删除')} ${e.id} ${e.text}` : c.yellow(`没有 id 为 ${args.flags.remove} 的条目`))
+    console.log('')
+  }
+
+  const ctx = readContext(repo)
+  if (args.flags.json) {
+    console.log(JSON.stringify(ctx, null, 2))
+    return
+  }
+  if (!ctx.entries.length) {
+    console.log(c.dim('这个仓库还没有记录任何决策 / 踩坑 / 约束 / 待办。'))
+    console.log('')
+    console.log(c.dim('agent 干活时应该顺手记（MCP 工具 session_remember），你也可以手敲：'))
+    console.log('')
+    console.log(`  ass context --decision "token 改用 refresh 轮换，因为旧接口不支持并发刷新"`)
+    console.log(`  ass context --dead-end  "在 middleware 里刷新会死循环，已验证不可行"`)
+    console.log(`  ass context --constraint "不要改旧版 SSO 的接口"`)
+    console.log(`  ass context --todo      "需求 5：首页表格换虚拟滚动"`)
+    console.log('')
+    console.log(c.dim(`文件：${contextFile(repo)}`))
+    return
+  }
+  console.log(contextMarkdown(repo, { includeDone: Boolean(args.flags.all) }))
+  console.log('')
+  console.log(c.dim(`共 ${ctx.entries.length} 条 · ${contextFile(repo)}`))
+  console.log(c.dim('勾掉待办：ass context --done c4    删除：ass context --remove c4    连已完成的也看：--all'))
 }
 
 function cmdSearch(args: Args, cfg: Config): void {
@@ -443,7 +518,10 @@ ${c.bold('看历史')}
 ${c.bold('搬上下文')}
   ass last [引用]           把最后一问原样搬过来（--rounds 3 连问多轮，含图片落盘）
   ass brief [引用]          生成交接摘要 Markdown（--out 文件.md，--tail 4，--files 25）
+                          --guess 额外附上「从对话里猜的决策/踩坑」（默认关，不准）
   ass note [引用]           收尾：把摘要存进本仓库，下次任何 agent 进来都能看到
+  ass context             看/记 决策·踩坑·约束·待办（--decision/--dead-end/--constraint/--todo）
+                          勾掉待办 --done c4，删除 --remove c4，连已完成一起看 --all
   ass notes                已保存的交接记录列表
 
 ${c.bold('接入 / 维护')}
@@ -490,6 +568,9 @@ function main(): void {
       return cmdNote(args, cfg)
     case 'notes':
       return cmdNotes(args)
+    case 'context':
+    case 'ctx':
+      return cmdContext(args, cfg)
     case 'search':
       return cmdSearch(args, cfg)
     case 'agents':
@@ -502,6 +583,9 @@ function main(): void {
       return cmdConfig(args)
     case 'install':
       return cmdInstall(args)
+    case 'rules':
+      console.log(rulesBlock())
+      return
     case 'uninstall':
       return cmdUninstall(args)
     case 'init':
