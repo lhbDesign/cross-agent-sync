@@ -10,6 +10,7 @@ import { formatSearchResult, searchSessions } from './core/search'
 import { findSession, listSessions, readSession } from './core/store'
 import { saveImages } from './core/attach'
 import { detectSources } from './detect'
+import { maybeReexec } from './bootstrap'
 import { fmtTime, parseSince, plain, truncate } from './util'
 import type { Turn } from './types'
 
@@ -368,6 +369,9 @@ const PROMPTS = [
     arguments: [{ name: 'repo', description: '仓库路径（可留空，默认当前目录）', required: false }],
   },
 ]
+
+// 需要 SQLite 而又缺 --experimental-sqlite 时，先带 flag 重跑一次自己
+maybeReexec()
 
 let CFG: Config = loadConfig()
 

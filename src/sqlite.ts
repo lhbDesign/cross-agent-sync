@@ -80,6 +80,32 @@ function openCli(file: string): Db {
   }
 }
 
+/**
+ * 真正在用的是哪个后端 —— 按**实际探测**判断，不按 Node 版本号猜
+ * （Node 22.11 就没带 node:sqlite 的默认开关，凭版本号会误报）。
+ */
+export function sqliteBackend(): { backend: 'node:sqlite' | 'sqlite3(cli)' | null; reason: string } {
+  const mod = getNodeSqlite()
+  if (mod?.DatabaseSync) {
+    try {
+      // 拿一个内存库真开一下，确认可用（而不是“模块能 require 就算数”）
+      const probe = new mod.DatabaseSync(':memory:')
+      probe.close()
+      return { backend: 'node:sqlite', reason: 'Node 内置' }
+    } catch (e) {
+      // 常见：Node 22.5~23.3 需要 --experimental-sqlite
+      const msg = e instanceof Error ? e.message : String(e)
+      if (hasSqliteCli()) return { backend: 'sqlite3(cli)', reason: `node:sqlite 不可用（${msg.slice(0, 60)}），已回退到 sqlite3 命令行` }
+      return { backend: null, reason: `node:sqlite 不可用：${msg}` }
+    }
+  }
+  if (hasSqliteCli()) return { backend: 'sqlite3(cli)', reason: '系统 sqlite3 命令行' }
+  return {
+    backend: null,
+    reason: '既没有 node:sqlite（Node < 22.5，或需要 --experimental-sqlite），也没有 sqlite3 命令行',
+  }
+}
+
 export function openSqlite(file: string): DbOpenResult {
   if (!exists(file)) return { db: null, backend: null, reason: `文件不存在: ${file}` }
   const mod = getNodeSqlite()

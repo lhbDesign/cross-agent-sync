@@ -41,10 +41,13 @@
 ## 安装
 
 ```bash
-npm install -g agent-session-sync      # 全局：得到 ass 命令
+npm install -g cross-agent-sync        # 全局：得到 ass 命令
 # 或
-npx agent-session-sync list            # 直接用，不安装
+npx cross-agent-sync list              # 直接用，不安装
 ```
+
+> npm 上的包名是 **`cross-agent-sync`**；工具在运行时的名字（配置目录、MCP server 名、
+> 规则块标记）统一叫 `agent-session-sync`，两者不一样是有意的 —— 改名不会动你已有的配置。
 
 要求 Node >= 18.17。读 SQLite 类型的 agent（Cursor / OpenCode）时二选一：
 

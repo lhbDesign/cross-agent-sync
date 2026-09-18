@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 说明
+
+- npm 包名定为 **`cross-agent-sync`**（`agent-session-sync` 在 npm 上已被他人占用）。
+  工具在**运行时**的名字仍是 `agent-session-sync`：配置目录 `~/.config/agent-session-sync/`、
+  MCP server 名、规则块标记都没变，所以改名不影响任何已有安装。
+
 ## [0.1.0] — 2026-09-18
 
 第一版。目标：换 agent、开新会话时，不用再手工复述「之前做了什么、接下来做什么」。

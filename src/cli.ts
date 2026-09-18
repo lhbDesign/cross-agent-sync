@@ -12,6 +12,7 @@ import { formatSearchResult, searchSessions } from './core/search'
 import { detectAgents, deinitProject, doctor, initProject, installAll, rulesBlock, uninstallAll } from './install'
 import { applyDetected, detectSources } from './detect'
 import { fmtTime, plain } from './util'
+import { maybeReexec } from './bootstrap'
 
 const TTY = process.stdout.isTTY === true
 const c = {
@@ -464,6 +465,7 @@ ${c.bold('引用')}
 }
 
 function main(): void {
+  maybeReexec()
   const argv = process.argv.slice(2)
   if (argv.includes('--help') || argv.includes('-h') || argv[0] === 'help') return usage()
   if (argv.includes('--version') || argv.includes('-v')) {

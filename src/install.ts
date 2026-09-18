@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { HOME, exists, isDir, readJsonFile, writeJsonFile } from './util'
+import { sqliteBackend } from './sqlite'
 
 /**
  * 把 MCP server + 规则块接进本机的各个 agent。
@@ -70,6 +71,36 @@ const CURSOR_MCP = path.join(HOME, '.cursor', 'mcp.json')
 const KIRO_MCP = path.join(HOME, '.kiro', 'settings', 'mcp.json')
 const WINDSURF_MCP = path.join(HOME, '.codeium', 'windsurf', 'mcp_config.json')
 const TRAE_DIR = path.join(HOME, '.trae')
+
+/**
+ * 这个 agent 到底装没装。没装就**什么都不要写** ——
+ * 否则 `ass install` 会在用户 home 里造出一堆 .claude.json / .codex / .config 空壳，
+ * 这跟「不污染」的原则是冲突的。
+ */
+function isInstalled(id: string): boolean {
+  switch (id) {
+    case 'claude':
+      return exists(CLAUDE_JSON) || isDir(path.join(HOME, '.claude'))
+    case 'codex':
+      return exists(CODEX_TOML) || isDir(path.join(HOME, '.codex'))
+    case 'opencode':
+      return exists(OPENCODE_JSONC) || isDir(path.join(HOME, '.config', 'opencode'))
+    case 'cursor':
+      return exists(CURSOR_MCP) || isDir(path.join(HOME, '.cursor'))
+    case 'kiro':
+      return exists(KIRO_MCP) || isDir(path.join(HOME, '.kiro'))
+    case 'windsurf':
+      return exists(WINDSURF_MCP) || isDir(path.join(HOME, '.codeium', 'windsurf'))
+    default:
+      return true
+  }
+}
+
+/** 没装就返回一个“跳过”步骤，装了返回 null 让调用方继续 */
+function notInstalled(id: string, target: string, cfgPath: string): Step | null {
+  if (isInstalled(id)) return null
+  return { target, path: cfgPath, action: 'missing', detail: '本机没装这个 agent，已跳过（不会创建任何文件）' }
+}
 
 // ---------------------------------------------------------------- 文本块
 
@@ -147,6 +178,8 @@ ${MARK_END}`
 // ---------------------------------------------------------------- 各 agent 的 MCP 配置
 
 function installClaude(): Step[] {
+  const skip = notInstalled('claude', 'claude', CLAUDE_JSON)
+  if (skip) return [skip]
   const entry = { type: 'stdio', ...mcpEntry(), env: {} }
   const cfg = readJsonFile<Record<string, any>>(CLAUDE_JSON, {})
   cfg.mcpServers = cfg.mcpServers || {}
@@ -168,6 +201,8 @@ function uninstallClaude(): Step[] {
 
 /** Codex 用 TOML：只做最小侵入的文本增删（不引 TOML 依赖） */
 function installCodex(): Step[] {
+  const skip = notInstalled('codex', 'codex', CODEX_TOML)
+  if (skip) return [skip]
   const e = mcpEntry()
   const block = `[mcp_servers.${SERVER_NAME}]\ncommand = ${JSON.stringify(e.command)}\nargs = [${e.args.map((a) => JSON.stringify(a)).join(', ')}]`
   if (!exists(CODEX_TOML)) return [{ target: 'codex', path: CODEX_TOML, action: 'missing' }]
@@ -191,7 +226,9 @@ function uninstallCodex(): Step[] {
 
 /** OpenCode 是 JSONC：先试着按 JSON 解析，不行就走文本插入 */
 function installOpencode(): Step[] {
-  if (!exists(OPENCODE_JSONC)) return [{ target: 'opencode', path: OPENCODE_JSONC, action: 'missing' }]
+  const skip = notInstalled('opencode', 'opencode', OPENCODE_JSONC)
+  if (skip) return [skip]
+  if (!exists(OPENCODE_JSONC)) return [{ target: 'opencode', path: OPENCODE_JSONC, action: 'missing', detail: '有 opencode 目录但没有 opencode.jsonc' }]
   const e = mcpEntry()
   const entry = { type: 'local', command: [e.command, ...e.args], enabled: true }
   let text = fs.readFileSync(OPENCODE_JSONC, 'utf8')
@@ -262,6 +299,9 @@ function uninstallOpencode(): Step[] {
 }
 
 function jsonMcpFile(file: string, target: string, install: boolean): Step {
+  if (install && !isInstalled(target)) {
+    return { target, path: file, action: 'missing', detail: '本机没装这个 agent，已跳过' }
+  }
   if (!exists(file)) return { target, path: file, action: 'missing' }
   const cfg = readJsonFile<Record<string, any>>(file, { mcpServers: {} })
   cfg.mcpServers = cfg.mcpServers || {}
@@ -293,9 +333,18 @@ export function installAll(opts: { dryRun?: boolean; only?: string } = {}): Step
   steps.push({ target: 'trae', path: TRAE_DIR, action: exists(TRAE_DIR) ? 'manual' : 'skipped', detail: 'Trae 的 MCP 配置请在 IDE 里手工添加（见 README）' })
 
   const block = rulesBlock()
-  steps.push(patchBlock(CLAUDE_MD, block))
-  steps.push(patchBlock(CODEX_MD, block))
-  steps.push(patchBlock(OPENCODE_MD, block))
+  for (const [id, rulesFile, target] of [
+    ['claude', CLAUDE_MD, 'claude'],
+    ['codex', CODEX_MD, 'codex'],
+    ['opencode', OPENCODE_MD, 'opencode'],
+  ] as const) {
+    const skip = notInstalled(id, target, rulesFile)
+    if (skip) {
+      steps.push({ ...skip, detail: '本机没装这个 agent，规则也没写' })
+      continue
+    }
+    steps.push(patchBlock(rulesFile, block))
+  }
   setDryRun(false)
   return steps
 }
@@ -369,19 +418,13 @@ export function detectAgents(): { id: string; label: string; config: string; exi
 /** 自检：Node 版本、sqlite 能力、各 agent 数据源 */
 export function doctor(): string[] {
   const lines: string[] = []
-  const major = Number(process.versions.node.split('.')[0])
-  const minor = Number(process.versions.node.split('.')[1])
-  const hasNodeSqlite = major > 23 || (major === 23 ? minor >= 4 : major === 22 && minor >= 5)
-  lines.push(`node              ${process.version}${hasNodeSqlite ? '（自带 node:sqlite）' : ''}`)
-  let hasCli = false
-  try {
-    execFileSync('sqlite3', ['--version'], { stdio: 'ignore', timeout: 4000 })
-    hasCli = true
-  } catch {
-    hasCli = false
+  lines.push(`node              ${process.version}`)
+  const sq = sqliteBackend()
+  lines.push(`SQLite 读取       ${sq.backend ? `✓ 可用（${sq.backend}）` : '✗ 不可用'}  ${sq.reason}`)
+  if (!sq.backend) {
+    lines.push('                  影响：Cursor / OpenCode 以及 sqlite 类型的自定义 agent 读不了；')
+    lines.push('                  解决：装个 sqlite3 命令行，或用 Node 22.5+ 并加 --experimental-sqlite')
   }
-  lines.push(`sqlite3 命令      ${hasCli ? '✓ 有' : '✗ 没有'}`)
-  lines.push(`SQLite 读取       ${hasNodeSqlite || hasCli ? '✓ 可用（' + (hasNodeSqlite ? 'node:sqlite' : 'sqlite3 CLI') + '）' : '✗ 不可用：升级 Node 到 22.5+ 或安装 sqlite3'}`)
   lines.push(`MCP 入口          ${mcpScript()}`)
   lines.push(`CLI 入口          ${isDir(path.dirname(process.argv[1] ?? '')) ? process.argv[1] : '—'}`)
   return lines

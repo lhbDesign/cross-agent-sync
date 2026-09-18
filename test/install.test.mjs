@@ -14,6 +14,15 @@ fs.writeFileSync(path.join(fakeHome, '.codex', 'config.toml'), '[tui]\nmodel = "
 fs.writeFileSync(path.join(fakeHome, '.config', 'opencode', 'opencode.jsonc'), '{\n  "$schema": "https://opencode.ai/config.json"\n}\n')
 
 const env = { ...process.env, ASS_HOME: fakeHome, ASS_DATA_DIR: path.join(fakeHome, 'data') }
+
+/** 造一个“什么都没装”的空 home */
+function emptyHome() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ass-nohome-'))
+  return { dir, env: { ...process.env, ASS_HOME: dir, ASS_DATA_DIR: path.join(dir, 'data') } }
+}
+function runIn(e, ...args) {
+  return execFileSync(process.execPath, ['dist/cli.js', ...args], { env: e, encoding: 'utf8' })
+}
 const run = (...args) => execFileSync(process.execPath, ['dist/cli.js', ...args], { env, encoding: 'utf8' })
 
 test('install --dry-run 不改动任何文件', () => {
@@ -78,4 +87,30 @@ test('init 不覆盖仓库里已有的 AGENTS.md 内容', () => {
   assert.match(text, /跨 agent 会话同步/)
   run('init', proj, '--undo')
   assert.match(fs.readFileSync(path.join(proj, 'AGENTS.md'), 'utf8'), /不要删我/)
+})
+
+
+test('机器上什么都没装时，install 不创建任何文件（不能污染用户 home）', () => {
+  const { dir, env: e } = emptyHome()
+  const out = runIn(e, 'install')
+  assert.match(out, /没装这个 agent/, '应该报告跳过而不是硬写')
+  const created = fs.readdirSync(dir).filter((f) => f !== 'data')
+  assert.deepEqual(created, [], `不该创建任何东西，实际创建了：${created.join(', ')}`)
+})
+
+test('只装了 claude 时，只动 claude，不碰 codex/opencode', () => {
+  const { dir, env: e } = emptyHome()
+  fs.writeFileSync(path.join(dir, '.claude.json'), JSON.stringify({ mcpServers: {} }))
+  runIn(e, 'install')
+  assert.ok(fs.existsSync(path.join(dir, '.claude.json')))
+  assert.equal(fs.existsSync(path.join(dir, '.codex')), false, '不该凭空造 .codex')
+  assert.equal(fs.existsSync(path.join(dir, '.config')), false, '不该凭空造 .config')
+  const claude = JSON.parse(fs.readFileSync(path.join(dir, '.claude.json'), 'utf8'))
+  assert.ok(claude.mcpServers['agent-session-sync'], 'claude 装了就该接上')
+})
+
+test('doctor 如实报告 SQLite 后端（不按 Node 版本号猜）', () => {
+  const out = runIn({ ...process.env }, 'doctor')
+  assert.match(out, /SQLite 读取\s+[✓✗]/)
+  if (/sqlite3\(cli\)/.test(out)) assert.match(out, /sqlite3 命令行/)
 })
