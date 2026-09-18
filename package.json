@@ -1,0 +1,55 @@
+{
+  "name": "agent-session-sync",
+  "version": "0.1.0",
+  "description": "跨 agent 会话同步：换 agent 或新开会话时，一条命令把上次的上下文、原始提问（含图片）搬过来。支持 Claude Code / Codex / Cursor / OpenCode / Kiro / Trae 与自定义 agent。",
+  "keywords": [
+    "agent",
+    "claude-code",
+    "codex",
+    "cursor",
+    "opencode",
+    "kiro",
+    "trae",
+    "session",
+    "handoff",
+    "context",
+    "mcp",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "lihaibo",
+  "type": "module",
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "bin": {
+    "agent-session-sync": "./dist/cli.js",
+    "ass": "./dist/cli.js",
+    "agent-session-sync-mcp": "./dist/mcp.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build --silent && node --test",
+    "prepublishOnly": "npm run typecheck && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2"
+  }
+}
