@@ -194,6 +194,9 @@ export function cleanUserText(text: string): string {
   t = t.replace(/<command-args>[\s\S]*?<\/command-args>/g, '')
   t = t.replace(/<environment_context>[\s\S]*?<\/environment_context>/g, '')
   t = t.replace(/^#+\s*AGENTS\.md\s+instructions[\s\S]*?<\/INSTRUCTIONS>/i, '')
+  // 图片/附件在文本里留下的占位符（真图已经按 base64 单独解析出来了）
+  t = t.replace(/<image>\s*<\/image>/gi, '')
+  t = t.replace(/<file>\s*<\/file>/gi, '')
   return t.trim()
 }
 

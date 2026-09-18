@@ -165,7 +165,8 @@ function cmdLast(args: Args, cfg: Config): void {
   const found = findSession(ref, cfg)
   if (!found) return usage(`没找到会话：${ref}`)
   const rounds = Math.max(1, Number(args.flags.rounds || 1))
-  const turns = readSession(found, { tail: 200 })
+  // 这里必须全量读：只读文件尾巴会漏掉更早的轮次（尤其是相隔很远的提问）
+  const turns = readSession(found)
   const users = turns.filter((t) => t.role === 'user')
   const picked = users.slice(-rounds)
   if (picked.length === 0) return usage('这个会话里没有找到用户提问。')
