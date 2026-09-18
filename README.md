@@ -25,6 +25,7 @@
 | **收尾存档**，下次任何 agent 一进来就能看到 | `ass note` · `session_note` · `session_status` |
 | 跨 agent 全文搜索 | `ass search "点击穿透"` · `session_search` |
 | 一键把 MCP + 规则接进本机各 agent | `ass install` |
+| **自检索**：扫盘找出本机所有可能的 agent | `ass detect` · `session_detect` |
 | 哪些 agent 被探测到了、数据在哪 | `ass agents` |
 | 自检 | `ass doctor` |
 
@@ -108,25 +109,42 @@ ass install          # 一键写 MCP 配置 + 全局规则块（先看：ass ins
 
 ## 支持的 agent
 
-内置 4 个，其余通过配置接入（见下一节）。
+内置 4 个（Claude Code / Codex / Cursor / OpenCode），其余通过 `ass detect` + 配置接入。
 
 | agent | 数据源 | 格式 | 图片 |
 | --- | --- | --- | --- |
 | Claude Code | `~/.claude/projects/<slug>/<uuid>.jsonl` | JSONL | ✅ 内联 base64 |
 | Codex | `~/.codex/sessions/**/rollout-*.jsonl`、`~/.codex/archived_sessions/` | JSONL | ✅ 内联 base64 |
 | OpenCode | `~/.local/share/opencode/opencode.db` | SQLite | ✅ `part.data.url` 是 data URL |
-| Cursor | `<Cursor User>/globalStorage/state.vscdb` | SQLite | ✅ bubble 里的 images |
+| Cursor | `<Cursor User>/globalStorage/state.vscdb` | SQLite | ✅ 附件文件 `workspaceStorage/<id>/images/` |
+| Continue（可接入） | `~/.continue/sessions/*.json` | JSON | — |
+| Gemini CLI（可接入） | `~/.gemini/tmp/<hash>/chats/*.json` | JSON | — |
 
 仓库归属：Claude / Codex 用会话记录里的 `cwd`，OpenCode 用 `session.directory`，
 Cursor 用 `workspaceStorage/<id>/workspace.json` 里的 `folder`；
 最后统一用 `git rev-parse --show-toplevel` 归一化 —— 所以从子目录启动的会话也能对上同一个仓库。
+
+### 没内置的 agent：`ass detect` 自己找
+
+```bash
+ass detect            # 扫一遍本机，列出所有能找到会话的 agent
+ass detect --write    # 把「可接入」的写进配置文件（本机继续 / Gemini CLI 就是这么进去的）
+```
+
+`ass detect` 会分三类告诉你：
+
+- **内置**：已经能读的（Claude Code / Codex / Cursor / OpenCode）；
+- **可接入**：格式已知、给一段现成的 `customAgents` 配置就能用（Continue、Gemini CLI）；
+- **需自定义**：装是装了、但存储结构还没摸清（Trae / Windsurf / VS Code Copilot Chat / Kiro）——
+  它会告诉你库文件在哪，以及该往哪儿看。
 
 ### 关于 IDE 类 agent（Cursor / Kiro / Trae / Windsurf）
 
 这类 agent 把会话塞在自己的 SQLite 或私有存储里，**结构是内部实现、随时会变**。
 所以本工具的态度是：
 
-- Cursor 内置了一份「尽力读取」的适配器，读不到会告诉你原因，不会假装支持；
+- Cursor 内置了一份「尽力读取」的适配器（连它存在 `workspaceStorage/<id>/images/` 里的
+  图片附件也能捞出来），读不到会告诉你原因，不会假装支持；
 - Kiro / Trae / Windsurf 这类**需要你自己配置**（见下），你告诉它数据在哪、字段怎么取，它就能用。
 
 ---
@@ -151,6 +169,8 @@ Cursor 用 `workspaceStorage/<id>/workspace.json` 里的 `folder`；
 ```
 
 ### 自定义 agent 示例
+
+三种数据形态都支持：`jsonl`（一行一条）、`json`（一个文件一个会话）、`sqlite`（一条 SQL 出所有消息）。
 
 **例 1：一个用 JSONL 存会话的 agent（比如 Kiro 的某类导出）**
 
@@ -178,6 +198,32 @@ Cursor 用 `workspaceStorage/<id>/workspace.json` 里的 `folder`；
 ```
 
 `map` 里都是**点号路径**，从每条记录上取值；`role` 取到 `user` / `assistant` 才会计入对话。
+
+**例 1.5：一个文件一个会话的 JSON（Continue 就是这样）**
+
+```jsonc
+{
+  "customAgents": [
+    {
+      "id": "continue",
+      "label": "Continue",
+      "type": "json",
+      "path": "~/.continue/sessions",
+      "records": "history",              // 消息数组在这个字段里
+      "roleMap": { "gemini": "assistant" }, // 把该 agent 的角色名映射成 user/assistant（可选）
+      "map": {
+        "id": "sessionId",
+        "cwd": "workspaceDirectory",
+        "title": "title",
+        "role": "message.role",
+        "text": "message.content"
+      }
+    }
+  ]
+}
+```
+
+消息正文是 `[{type:'text',text:'…'}]` 这种分片数组时，会自动拼成文本。
 
 **例 2：一个用 SQLite 存会话的 agent**
 
@@ -228,6 +274,7 @@ ass install              接入 MCP + 全局规则（--dry-run 只看不改）
 ass rules                打印规则原文（Cursor/Trae 要手工贴的用）
 ass uninstall            摘掉 MCP + 规则（不动会话数据）
 ass init [目录]          项目级规则注入（--dry-run / --undo）
+ass detect               自检索：扫盘找出本机所有可能的 agent（--write 写入配置草案）
 ass agents               探测到哪些 agent、MCP 是否已接入
 ass repos                有历史的仓库列表
 ass config [--init]      打印/初始化配置文件
@@ -246,6 +293,7 @@ ass doctor               自检
 | `session_search` | 跨会话全文搜索 |
 | `session_note` | 保存交接摘要（收尾时用） |
 | `session_repos` | 哪些仓库有历史 |
+| `session_detect` | 扫盘找出本机所有可能的 agent |
 
 另有 MCP prompt `sync_previous_session`（Claude Code 里可用 `/mcp__agent-session-sync__sync_previous_session`）。
 
@@ -310,9 +358,10 @@ src/cli.ts          命令行          src/mcp.ts   MCP server（规划中）
 
 - [x] **M1** 跨 agent 索引 + CLI（list / show / last / agents / repos / doctor）
 - [x] **M2** 交接摘要（brief）+ MCP server + 收尾记录（note）+ `ass install`
-- [x] **M4（部分）** 项目级规则注入 `ass init --dry-run/--undo`、自定义 agent 配置
-- [ ] **M3** 附件搬运补齐（OpenCode/Cursor 的图片、非图片文件附件）
-- [ ] **M4（余下）** 自检索：扫盘列出「疑似 agent 的数据目录」并生成配置草案
+- [x] **M3** 图片搬运打通全部内置 agent（Claude / Codex 内联 base64，OpenCode data URL，Cursor 附件文件）
+- [x] **M4** 自检索 `ass detect`（含可接入草案）+ 项目级规则注入 `ass init --dry-run/--undo` + 自定义 agent
+- [ ] **M5** 打包发布：npm publish、CI、CHANGELOG
+- [ ] 待摸清：Trae / Windsurf / VS Code Copilot Chat 的存储结构（`ass detect` 已能找到库文件）
 
 ## License
 

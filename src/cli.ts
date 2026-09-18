@@ -3,13 +3,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 import type { SessionMeta, Turn } from './types'
-import { DATA_DIR, configPath, ensureConfig, loadConfig, type Config } from './config'
+import { DATA_DIR, configPath, ensureConfig, loadConfig, saveConfig, type Config } from './config'
 import { agentStatus, findSession, listSessions, readSession } from './core/store'
 import { saveImages } from './core/attach'
 import { buildBrief } from './core/brief'
 import { latestNote, listNotes, saveNote } from './core/handoff'
 import { formatSearchResult, searchSessions } from './core/search'
 import { detectAgents, deinitProject, doctor, initProject, installAll, rulesBlock, uninstallAll } from './install'
+import { applyDetected, detectSources } from './detect'
 import { fmtTime, plain } from './util'
 
 const TTY = process.stdout.isTTY === true
@@ -56,7 +57,7 @@ function parseArgs(argv: string[]): Args {
 }
 
 function repoLabel(s: SessionMeta): string {
-  return s.project || (s.repo ? path.basename(s.repo) : '—')
+  return s.project || (s.repo ? path.basename(s.repo) : '')
 }
 
 function printList(sessions: SessionMeta[], opts: { showRepo: boolean }): void {
@@ -69,8 +70,10 @@ function printList(sessions: SessionMeta[], opts: { showRepo: boolean }): void {
     const idx = c.dim(String(i + 1).padStart(w, ' '))
     const agent = c.cyan(s.agent.padEnd(9))
     const time = fmtTime(s.updatedAt || s.startedAt)
-    const turns = s.turns ? c.dim(`${s.turns}轮`) : ''
-    const repo = opts.showRepo ? c.dim(` [${repoLabel(s)}]`) : ''
+    // Cursor 这类拿不到精确轮次的，退而显示气泡数
+    const turns = s.turns ? c.dim(`${s.turns}轮`) : s.bubbles ? c.dim(`${s.bubbles}条`) : ''
+    const label = repoLabel(s)
+    const repo = opts.showRepo && label ? c.dim(` [${label}]`) : ''
     console.log(`${idx} ${agent} ${c.dim(time)}  ${plain(s.title, 46)}${repo} ${turns}`)
     if (s.preview) console.log(`${' '.repeat(w)} ${c.dim(' '.repeat(9) + ' ' + plain(s.preview, 100))}`)
   })
@@ -295,6 +298,47 @@ function cmdAgents(args: Args, cfg: Config): void {
   if (args.flags.json) console.log(JSON.stringify(status.map((s) => ({ id: s.adapter.id, available: s.available, found: s.found, error: s.error })), null, 2))
 }
 
+function cmdDetect(args: Args, cfg: Config): void {
+  const list = detectSources(cfg)
+  if (args.flags.json) {
+    console.log(JSON.stringify(list, null, 2))
+    return
+  }
+  for (const d of list) {
+    const mark = d.available ? c.green('●') : c.dim('○')
+    const kind =
+      d.kind === 'candidate' ? c.yellow(' [可接入]') : d.kind === 'probe' ? c.dim(' [需自定义]') : d.kind === 'configured' ? c.dim(' [已配置]') : ''
+    const n = d.sessions ? c.dim(`${d.sessions} 个会话`) : ''
+    console.log(`${mark} ${c.cyan(d.id.padEnd(14))} ${(d.label || '').padEnd(20)} ${n}${kind}`)
+    console.log(`  ${c.dim(d.path)}`)
+    if (d.detail) console.log(`  ${c.dim(d.detail)}`)
+  }
+
+  const cands = list.filter((d) => d.kind === 'candidate' && d.config)
+  if (cands.length && !args.flags.write) {
+    console.log('')
+    console.log(c.bold(`发现 ${cands.length} 个可以直接接入的 agent`))
+    for (const d of cands) {
+      console.log('')
+      console.log(c.dim(`—— ${d.id} 的配置草案 ——`))
+      console.log(JSON.stringify({ customAgents: [d.config] }, null, 2))
+    }
+    console.log('')
+    console.log(c.dim('想直接写进配置：ass detect --write'))
+  }
+  if (args.flags.write) {
+    const ids = args.positional.length ? args.positional : []
+    const { added, config } = applyDetected(ids, cfg)
+    if (!added.length) {
+      console.log(c.dim('没有新的可接入 agent。'))
+      return
+    }
+    saveConfig(config)
+    console.log(c.green(`已写入配置：${added.map((a) => a.id).join(', ')}`))
+    console.log(c.dim(configPath()))
+  }
+}
+
 function cmdRepos(args: Args, cfg: Config): void {
   const { sessions } = listSessions({ includeAll: true }, cfg)
   const byRepo = new Map<string, { n: number; agents: Set<string>; last: number }>()
@@ -407,6 +451,7 @@ ${c.bold('接入 / 维护')}
   ass uninstall            摘掉 MCP + 规则（不动你的会话数据）
   ass init [目录]          项目级注入规则（--dry-run / --undo）
   ass agents               探测到哪些 agent、数据源在哪、MCP 是否已接入
+  ass detect               自检索：扫盘找出本机所有可能的 agent（--write 写入配置草案）
   ass repos                有历史的仓库列表
   ass config [--init]      打印/初始化配置文件
   ass doctor               自检
@@ -447,6 +492,8 @@ function main(): void {
       return cmdSearch(args, cfg)
     case 'agents':
       return cmdAgents(args, cfg)
+    case 'detect':
+      return cmdDetect(args, cfg)
     case 'repos':
       return cmdRepos(args, cfg)
     case 'config':

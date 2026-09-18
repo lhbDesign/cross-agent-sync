@@ -1,7 +1,10 @@
-/** 一个会话里出现的图片（来自 agent 会话记录里的内联 base64） */
+/** 一个会话里出现的图片：要么是内联 base64，要么是本机上已有的文件 */
 export interface ImagePart {
   mediaType: string
-  base64: string
+  /** 记录里内联的图片数据 */
+  base64?: string
+  /** 已经在磁盘上的图片（Cursor 这类把附件存成文件的 agent） */
+  path?: string
 }
 
 /** 会话里的文件/文本附件引用 */

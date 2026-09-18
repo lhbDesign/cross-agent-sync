@@ -55,6 +55,9 @@ export type { NoteEntry, SavedNote } from './core/handoff'
 export { formatSearchResult, searchSessions } from './core/search'
 export type { SearchHit, SearchResult } from './core/search'
 
+export { applyDetected, detectSources } from './detect'
+export type { Detected } from './detect'
+
 export {
   deinitProject,
   detectAgents,

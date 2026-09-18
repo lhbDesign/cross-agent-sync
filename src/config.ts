@@ -18,8 +18,12 @@ export const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 export interface CustomAgent {
   id: string
   label?: string
-  /** jsonl = 一个目录里若干 .jsonl；sqlite = 一个 db 文件（需同时给 query） */
-  type: 'jsonl' | 'sqlite'
+  /**
+   * jsonl  = 一个目录里若干 .jsonl，一行一条记录
+   * json   = 一个目录里若干 .json，一个文件一个会话（记录数组用 records 指定，如 history）
+   * sqlite = 一个 db 文件（需同时给 query）
+   */
+  type: 'jsonl' | 'json' | 'sqlite'
   /** 数据源：文件或目录，支持 ~ 展开 */
   path: string
   /** 该 agent 的会话文件里，哪些字段能取到这些值（点号路径） */
@@ -34,6 +38,10 @@ export interface CustomAgent {
   }
   /** type=sqlite 时的查询语句（返回列名同 map 的键） */
   query?: string
+  /** type=json 时，记录数组在文件里的位置（点号路径），如 "history" */
+  records?: string
+  /** 把该 agent 自己的角色名映射成 user/assistant，如 { "gemini": "assistant" } */
+  roleMap?: Record<string, 'user' | 'assistant'>
   resumeCmd?: string
   hint?: string
 }

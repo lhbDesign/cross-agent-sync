@@ -60,9 +60,34 @@ function workspacePath(workspaceId: string): string | null {
   return String(raw).replace(/^file:\/\//, '')
 }
 
+/**
+ * 每个 composer 的气泡数 / 用户轮次（一次聚合查询，别对 500 个会话各查一遍）。
+ * key 形如 `bubbleId:<composerId>:<bubbleId>`，composerId 是 36 字符 uuid。
+ * 轮次是**近似值**：Cursor 把消息类型存在 JSON 里（`"type":1` 是用户、`2` 是助手），
+ * 没有独立的列，只能靠 LIKE 数，够用来排序和过滤，不保证 100% 精确。
+ */
+function bubbleStats(d: Db): Map<string, { bubbles: number; turns: number }> {
+  const out = new Map<string, { bubbles: number; turns: number }>()
+  try {
+    const rows = d.query<{ cid: string; bubbles: number; turns: number }>(
+      `select substr(key, 10, 36) as cid,
+              count(*) as bubbles,
+              sum(case when value like '%"type":1,%' then 1 else 0 end) as turns
+         from cursorDiskKV
+        where key like 'bubbleId:%'
+        group by cid`,
+    )
+    for (const r of rows) out.set(String(r.cid), { bubbles: Number(r.bubbles) || 0, turns: Number(r.turns) || 0 })
+  } catch {
+    /* 结构对不上就当没有统计 */
+  }
+  return out
+}
+
 function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
   const d = db()
   if (!d) return []
+  const stats = bubbleStats(d)
   let rows: Record<string, any>[] = []
   try {
     rows = d.query(
@@ -85,6 +110,7 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
     if (head.isDraft) continue
     const cwd = workspacePath(String(r.workspaceId || ''))
     const repo = cwd ? gitRoot(cwd) : null
+    const st = stats.get(String(r.composerId)) || { bubbles: 0, turns: 0 }
     out.push({
       key: `cursor:${r.composerId}`,
       agent: 'cursor',
@@ -97,15 +123,46 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
       project: projectName(repo || cwd),
       startedAt: Number(r.createdAt) || null,
       updatedAt: Number(r.lastUpdatedAt) || null,
-      turns: 0,
-      bubbles: 0,
+      turns: st.turns,
+      bubbles: st.bubbles,
       model: head.modelConfig?.modelName ? String(head.modelConfig.modelName) : null,
       branch: null,
       source: DB_FILE,
       size: 0,
+      extra: { workspaceId: String(r.workspaceId || '') },
     })
   }
   return out
+}
+
+/**
+ * Cursor 把用户贴的图片存成**文件**：
+ *   <Cursor User>/workspaceStorage/<workspaceId>/images/<imageUuid>-<other>.png
+ * bubble 里只有 `{ uuid, dimension }`，所以这里按 uuid 前缀把真文件找出来。
+ */
+function imageIndex(workspaceId: string): Map<string, string> {
+  const out = new Map<string, string>()
+  if (!workspaceId) return out
+  const dir = path.join(WS_DIR, workspaceId, 'images')
+  let files: string[] = []
+  try {
+    files = fs.readdirSync(dir)
+  } catch {
+    return out
+  }
+  for (const f of files) {
+    const m = /^([0-9a-f-]{36})[-.]/i.exec(f)
+    if (m?.[1]) out.set(m[1].toLowerCase(), path.join(dir, f))
+  }
+  return out
+}
+
+const EXT_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
 }
 
 interface BubbleRow {
@@ -124,6 +181,7 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
   const d = db()
   if (!d) return []
   const rows = listBubbles(d, meta.id)
+  const idx = imageIndex(String((meta.extra as Record<string, unknown> | undefined)?.workspaceId ?? ''))
   const all: Turn[] = []
   for (const r of rows) {
     let b: Record<string, any>
@@ -138,9 +196,18 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
     for (const im of Array.isArray(b.images) ? b.images : []) {
       const url = im?.url || im?.data || im?.imageUrl
       if (typeof url === 'string') {
+        // 少数版本会直接内联 data URL
         const m = /^data:([a-z0-9.+/-]+);base64,(.+)$/i.exec(url)
         if (m) images.push({ mediaType: m[1] ?? 'image/png', base64: m[2] ?? '' })
+        continue
       }
+      // 常见情况：只给 uuid，真文件在 workspaceStorage/<id>/images/ 下
+      const uuid = typeof im?.uuid === 'string' ? im.uuid.toLowerCase() : ''
+      if (!uuid) continue
+      const file = idx.get(uuid)
+      if (!file) continue
+      const ext = (path.extname(file).slice(1) || 'png').toLowerCase()
+      images.push({ mediaType: EXT_MIME[ext] ?? 'image/png', path: file })
     }
     const text = cleanUserText(String(b.text || ''))
     if (!text && images.length === 0) continue

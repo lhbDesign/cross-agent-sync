@@ -9,6 +9,7 @@ import { latestNote, listNotes, saveNote } from './core/handoff'
 import { formatSearchResult, searchSessions } from './core/search'
 import { findSession, listSessions, readSession } from './core/store'
 import { saveImages } from './core/attach'
+import { detectSources } from './detect'
 import { fmtTime, parseSince, plain, truncate } from './util'
 import type { Turn } from './types'
 
@@ -338,6 +339,27 @@ const TOOLS: ToolDef[] = [
     },
   },
 ]
+
+TOOLS.push({
+  name: 'session_detect',
+  description:
+    'Scan this machine for coding agents that have local session history — including ones the tool does not support ' +
+    'out of the box — and return ready-to-paste custom-agent config drafts. Use when the user asks which agents can be synced.',
+  inputSchema: { type: 'object', properties: {} },
+  call() {
+    const list = detectSources(CFG)
+    const lines = list.map(
+      (d) => `- ${d.available ? '●' : '○'} **${d.label}** (\`${d.id}\`) · ${d.sessions ? `${d.sessions} 个会话` : '无数据'}${d.detail ? `\n  ${d.detail}` : ''}\n  \`${d.path}\``,
+    )
+    const cands = list.filter((d) => d.kind === 'candidate' && d.config)
+    let out = `${list.length} 个本机 agent：\n\n${lines.join('\n')}`
+    if (cands.length) {
+      out += `\n\n可直接接入（把 customAgents 写进 ~/.config/agent-session-sync/config.json）：\n\n`
+      out += '```json\n' + JSON.stringify({ customAgents: cands.map((d) => d.config) }, null, 2) + '\n```'
+    }
+    return out
+  },
+})
 
 const PROMPTS = [
   {

@@ -28,6 +28,18 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v)
 }
 
+/** 消息正文可能是字符串，也可能是 [{type:'text',text:'…'}] 这种分片 */
+function textOf(v: unknown): string {
+  if (typeof v === 'string') return v
+  if (Array.isArray(v)) {
+    return v
+      .map((p) => (typeof p === 'string' ? p : p && typeof p === 'object' && typeof (p as any).text === 'string' ? (p as any).text : ''))
+      .filter(Boolean)
+      .join('\n')
+  }
+  return v == null ? '' : String(v)
+}
+
 function num(v: unknown): number | null {
   if (typeof v === 'number') return v
   if (typeof v === 'string') {
@@ -39,7 +51,18 @@ function num(v: unknown): number | null {
   return null
 }
 
-function makeMeta(cfg: CustomAgent, id: string, cwd: string | null, title: string, preview: string, t0: number | null, t1: number | null, source: string, size = 0): SessionMeta {
+function makeMeta(
+  cfg: CustomAgent,
+  id: string,
+  cwd: string | null,
+  title: string,
+  preview: string,
+  t0: number | null,
+  t1: number | null,
+  source: string,
+  size = 0,
+  stats: { turns: number; bubbles: number } = { turns: 0, bubbles: 0 },
+): SessionMeta {
   const repo = cwd ? gitRoot(cwd) : null
   return {
     key: `${cfg.id}:${id}`,
@@ -53,8 +76,8 @@ function makeMeta(cfg: CustomAgent, id: string, cwd: string | null, title: strin
     project: projectName(repo || cwd),
     startedAt: t0,
     updatedAt: t1,
-    turns: 0,
-    bubbles: 0,
+    turns: stats.turns,
+    bubbles: stats.bubbles,
     model: null,
     branch: null,
     source,
@@ -62,7 +85,7 @@ function makeMeta(cfg: CustomAgent, id: string, cwd: string | null, title: strin
   }
 }
 
-function jsonlFiles(root: string): string[] {
+function dataFiles(root: string, exts: string[]): string[] {
   const out: string[] = []
   const walk = (dir: string, depth: number): void => {
     if (depth > 8) return
@@ -75,12 +98,40 @@ function jsonlFiles(root: string): string[] {
     for (const e of entries) {
       const full = path.join(dir, e.name)
       if (e.isDirectory()) walk(full, depth + 1)
-      else if (e.isFile() && e.name.endsWith('.jsonl')) out.push(full)
+      else if (e.isFile() && exts.some((x) => e.name.endsWith(x))) out.push(full)
     }
   }
   if (isDir(root)) walk(root, 0)
-  else if (exists(root) && root.endsWith('.jsonl')) out.push(root)
+  else if (exists(root) && exts.some((x) => root.endsWith(x))) out.push(root)
   return out
+}
+
+/** 一个文件 → 若干条记录（jsonl 逐行；json 取 records 指的数组） */
+function recordsOf(file: string, cfg: CustomAgent): Record<string, any>[] {
+  if (cfg.type !== 'json') return [...readJsonl(file)]
+  let root: unknown
+  try {
+    root = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return []
+  }
+  const arr = cfg.records ? pick(root, cfg.records) : root
+  const out = Array.isArray(arr) ? arr : []
+  // 把文件级的字段（sessionId / title / cwd …）并进每条记录，方便 map 统一取值
+  const rootObj = root && typeof root === 'object' ? (root as Record<string, unknown>) : {}
+  return out.map((r) => ({ ...rootObj, ...(r && typeof r === 'object' ? (r as Record<string, unknown>) : {}) }))
+}
+
+/** 该 agent 自己的角色名 → user/assistant */
+function makeRoleOf(cfg: CustomAgent): (v: unknown) => 'user' | 'assistant' | '' {
+  return (v: unknown) => {
+    const raw = String(v ?? '').toLowerCase()
+    const mapped = cfg.roleMap?.[raw] ?? cfg.roleMap?.[String(v ?? '')]
+    if (mapped) return mapped
+    if (raw === 'user' || raw === 'human') return 'user'
+    if (raw === 'assistant' || raw === 'model' || raw === 'ai') return 'assistant'
+    return ''
+  }
 }
 
 export function makeCustomAdapter(cfg: CustomAgent): Adapter {
@@ -95,37 +146,45 @@ export function makeCustomAdapter(cfg: CustomAgent): Adapter {
   const tsPath = map.timestamp || 'timestamp'
 
   const isJsonl = cfg.type !== 'sqlite'
+  const roleOf = makeRoleOf(cfg)
 
   return {
     id: cfg.id,
     label: cfg.label || cfg.id,
     hint: cfg.hint,
-    available: () => (isJsonl ? exists(root) : exists(root)),
+    available: () => exists(root),
     sources: () => [root],
 
     list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
       if (!isJsonl) return sqliteList(cfg, root, idPath, cwdPath, titlePath, tsPath)
       const out: SessionMeta[] = []
-      for (const file of jsonlFiles(root)) {
+      for (const file of dataFiles(root, cfg.type === 'json' ? ['.json'] : ['.jsonl'])) {
         let sid = '', cwd: string | null = null, title = '', firstUser = '', lastUser = ''
         let t0: number | null = null
-        for (const rec of readJsonl(file)) {
+        let turns = 0
+        let bubbles = 0
+        const records = recordsOf(file, cfg)
+        if (!records.length) continue
+        for (const rec of records) {
           const v = pick(rec, idPath)
           if (!sid && v) sid = str(v)
           const c = pick(rec, cwdPath)
           if (!cwd && c) cwd = str(c)
           const ti = pick(rec, titlePath)
           if (!title && ti) title = str(ti)
-          const role = str(pick(rec, rolePath))
-          const text = cleanUserText(str(pick(rec, textPath)))
+          const role = roleOf(pick(rec, rolePath))
+          if (!role) continue
+          bubbles++
+          const text = cleanUserText(textOf(pick(rec, textPath)))
           if (role === 'user' && text && !isInjected(text)) {
+            turns++
             if (!firstUser) firstUser = text
             lastUser = text
             if (t0 === null) t0 = num(pick(rec, tsPath))
           }
         }
         const st = statOf(file)
-        const meta = makeMeta(cfg, sid || path.basename(file, '.jsonl'), cwd, title || plain(firstUser, 70), lastUser, t0, st ? st.mtimeMs : null, file, st?.size ?? 0)
+        const meta = makeMeta(cfg, sid || path.basename(file, '.json'), cwd, title || plain(firstUser, 70), lastUser, t0, st ? st.mtimeMs : null, file, st?.size ?? 0, { turns, bubbles })
         out.push(meta)
       }
       return out
@@ -134,10 +193,10 @@ export function makeCustomAdapter(cfg: CustomAgent): Adapter {
     read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
       if (!isJsonl) return sqliteRead(cfg, root, meta.id, idPath, rolePath, textPath, imagePath, tsPath, opts)
       const turns: Turn[] = []
-      for (const rec of readJsonl(meta.source)) {
-        const role = str(pick(rec, rolePath))
+      for (const rec of recordsOf(meta.source, cfg)) {
+        const role = roleOf(pick(rec, rolePath))
         if (role !== 'user' && role !== 'assistant') continue
-        const text = cleanUserText(str(pick(rec, textPath)))
+        const text = cleanUserText(textOf(pick(rec, textPath)))
         const imgRaw = pick(rec, imagePath)
         const images: ImagePart[] = []
         const parsed = parseDataUrl(typeof imgRaw === 'string' ? imgRaw : '')
@@ -155,6 +214,9 @@ export function makeCustomAdapter(cfg: CustomAgent): Adapter {
 
 function sqliteList(cfg: CustomAgent, file: string, idPath: string, cwdPath: string, titlePath: string, tsPath: string): SessionMeta[] {
   if (!cfg.query) return []
+  const rolePath2 = cfg.map?.role || 'role'
+  const textPath2 = cfg.map?.text || 'text'
+  const roleOf = makeRoleOf(cfg)
   const r = openSqlite(file)
   if (!r.db) return []
   let rows: Record<string, any>[] = []
@@ -179,27 +241,34 @@ function sqliteList(cfg: CustomAgent, file: string, idPath: string, cwdPath: str
     let preview = ''
     let t0: number | null = null
     let t1: number | null = null
+    let turns = 0
+    let bubbles = 0
     for (const g of group) {
       const c = g[cwdPath]
       if (!cfgCwd && c) cfgCwd = str(c)
       const ti = g[titlePath]
       if (!title && ti) title = str(ti)
-      if (str(g.role) === 'user') {
-        const t = str(g.text)
-        if (t && !t.trimStart().startsWith('<')) {
+      const role = roleOf(g[rolePath2])
+      if (!role) continue
+      bubbles++
+      if (role === 'user') {
+        const t = textOf(g[textPath2])
+        if (t && !isInjected(t)) {
+          turns++
           if (!preview) preview = t
           t1 = num(g[tsPath]) ?? t1
         }
       }
       t0 = t0 ?? num(g[tsPath]) ?? null
     }
-    out.push(makeMeta(cfg, sid, cfgCwd, title, preview, t0, t1, file))
+    out.push(makeMeta(cfg, sid, cfgCwd, title, preview, t0, t1, file, 0, { turns, bubbles }))
   }
   return out
 }
 
 function sqliteRead(cfg: CustomAgent, file: string, sessionId: string, idPath: string, rolePath: string, textPath: string, imagePath: string, tsPath: string, opts: ReadOptions): Turn[] {
   if (!cfg.query) return []
+  const roleOf = makeRoleOf(cfg)
   const r = openSqlite(file)
   if (!r.db) return []
   let rows: Record<string, any>[] = []
@@ -213,7 +282,7 @@ function sqliteRead(cfg: CustomAgent, file: string, sessionId: string, idPath: s
   const turns: Turn[] = []
   for (const row of rows) {
     if (str(row[idPath] ?? row.id) !== sessionId) continue
-    const role = str(row[rolePath])
+    const role = roleOf(row[rolePath])
     if (role !== 'user' && role !== 'assistant') continue
     const text = str(row[textPath])
     const images: ImagePart[] = []

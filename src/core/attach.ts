@@ -14,6 +14,12 @@ export function saveImages(images: ImagePart[], key: string, dir: string = ATTAC
   fs.mkdirSync(target, { recursive: true })
   const out: string[] = []
   images.forEach((img, i) => {
+    // 本来就在磁盘上的（Cursor 的附件）：直接用原路径，不必复制一份
+    if (!img.base64 && img.path) {
+      if (fs.existsSync(img.path)) out.push(img.path)
+      return
+    }
+    if (!img.base64) return
     const ext = extForMediaType(img.mediaType)
     const file = path.join(target, `img-${startIndex + i}.${ext}`)
     try {
@@ -27,5 +33,7 @@ export function saveImages(images: ImagePart[], key: string, dir: string = ATTAC
 }
 
 export function toDataUrl(img: ImagePart): string {
-  return `data:${img.mediaType};base64,${img.base64}`
+  if (img.base64) return `data:${img.mediaType};base64,${img.base64}`
+  if (img.path) return `data:${img.mediaType};base64,${fs.readFileSync(img.path).toString('base64')}`
+  return ''
 }
