@@ -5,6 +5,9 @@ import process from 'node:process'
 import readline from 'node:readline'
 import { loadConfig, type Config } from './config'
 import { buildBrief, buildSummary } from './core/brief'
+import { parseLevel } from './core/budget'
+import { armGuard } from './core/roguard'
+import { buildAdapters } from './adapters/registry'
 import { latestNote, listNotes, saveNote } from './core/handoff'
 import { addContext, contextMarkdown, readContext, updateContext } from './core/context'
 import { formatSearchResult, searchSessions } from './core/search'
@@ -209,6 +212,13 @@ const TOOLS: ToolDef[] = [
           description: 'Session reference: full key like "claude:31c5af10-…", an id/prefix, a title fragment, or "#3" from the last list.',
         },
         repo: { type: 'string', description: 'Repository to search when the reference is not unique.' },
+        budget: {
+          type: 'string',
+          enum: ['tiny', 'small', 'standard', 'large', 'full'],
+          description:
+            'How much context to spend (default standard ≈ 8000 tokens). Lower it when you are already deep into a ' +
+            'conversation; raise it to "full" when you have room and need the whole timeline.',
+        },
       },
       required: ['session'],
     },
@@ -216,7 +226,8 @@ const TOOLS: ToolDef[] = [
       const found = findSession(String(args.session), CFG)
       if (!found) return `没找到会话：${args.session}。先用 session_list 列出候选。`
       const turns = readSession(found)
-      return buildBrief(found.meta, turns)
+      const level = parseLevel(args.budget)
+      return buildBrief(found.meta, turns, level ? { level } : {})
     },
   },
   {
@@ -576,6 +587,20 @@ maybeReexec()
 
 let CFG: Config = loadConfig()
 
+/**
+ * MCP server 长驻在 agent 进程旁边，是**最需要**把"只读"钉死的地方：
+ * 它会被 agent 按自己的判断自动调用，没有人在旁边看一眼。
+ * 所以启动即武装受保护区，之后任何写路径（含未来新增的工具）都自动受约束。
+ */
+function armGuardNow(): void {
+  try {
+    armGuard(buildAdapters(CFG, { includeUnavailable: true }))
+  } catch {
+    /* 边界拿不到不该让 server 起不来 */
+  }
+}
+armGuardNow()
+
 // ---------------- JSON-RPC over stdio ----------------
 function send(msg: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify(msg)}\n`)
@@ -615,6 +640,7 @@ function handle(req: Record<string, any>): void {
       if (!tool) return fail(id, -32602, `未知工具：${name}`)
       try {
         CFG = loadConfig() // 每次调用重读配置，改完配置不用重启
+        armGuardNow() // 配置可能改了自定义 agent 的数据源，保护区跟着重算
         const out = tool.call((params?.arguments || {}) as Record<string, any>)
         text(id, out)
       } catch (e) {

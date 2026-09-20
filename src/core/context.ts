@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { HANDOFF_DIR } from '../config'
 import type { Role } from '../types'
-import { fmtTime, readJsonFile, slugify, writeJsonFile } from '../util'
+import { fmtTime, plain, readJsonFile, slugify, writeJsonFile } from '../util'
 
 /**
  * 「决策 / 踩坑 / 约束 / 待办」这类**由 agent 主动记录**的结构化上下文。
@@ -136,25 +136,43 @@ export function contextStats(repoDir: string): ContextStats {
   }
 }
 
-/** 渲染成 Markdown（交接摘要 / session_status 用；空的话返回空串） */
-export function contextMarkdown(repoDir: string, opts: { includeDone?: boolean } = {}): string {
+/**
+ * 渲染成 Markdown（交接摘要 / session_status 用；空的话返回空串）。
+ *
+ * `maxPerKind` / `chars` 是给**交接预算**用的降档旋钮（见 core/budget.ts）：
+ * 主动记录这一层是必留的（mandatory），预算再紧也不能整节丢掉，但可以少列几条、
+ * 每条短一点。裁剪顺序上它与别的节刻意相反 —— 先砍的是**条数**，不是**类别**：
+ * 宁可少看两条备注，也不能把「决策」整类丢掉。
+ */
+export function contextMarkdown(
+  repoDir: string,
+  opts: { includeDone?: boolean; maxPerKind?: number; chars?: number } = {},
+): string {
   const ctx = readContext(repoDir)
   if (!ctx.entries.length) return ''
   const L: string[] = []
   L.push('## 决策 / 踩坑 / 待办（由 agent 主动记录，可信度高于自动摘要）')
   L.push('')
   const groups: ContextKind[] = ['decision', 'dead-end', 'constraint', 'todo', 'note']
+  let trimmed = 0
   for (const kind of groups) {
     let list = ctx.entries.filter((e) => e.kind === kind)
     if (kind === 'todo' && !opts.includeDone) list = list.filter((e) => !e.done)
     if (!list.length) continue
     L.push(`### ${KIND_LABEL[kind]}`)
     L.push('')
-    for (const e of list) {
+    const keep = opts.maxPerKind && opts.maxPerKind > 0 ? list.slice(0, opts.maxPerKind) : list
+    trimmed += list.length - keep.length
+    for (const e of keep) {
       const box = kind === 'todo' ? (e.done ? '- [x]' : '- [ ]') : '-'
       const who = e.source ? ` ${'·'} ${e.source}` : ''
-      L.push(`${box} \`${e.id}\` ${e.text}${who}`)
+      const text = opts.chars && opts.chars > 0 ? plain(e.text, opts.chars) : e.text
+      L.push(`${box} \`${e.id}\` ${text}${who}`)
     }
+    L.push('')
+  }
+  if (trimmed > 0) {
+    L.push(`> … 另有 ${trimmed} 条因交接预算未列出（\`ass context\` 看全部）`)
     L.push('')
   }
   return L.join('\n').trimEnd()

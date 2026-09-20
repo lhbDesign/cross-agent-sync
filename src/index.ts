@@ -52,6 +52,31 @@ export { saveImages, toDataUrl } from './core/attach'
 
 export { buildBrief, buildSummary, extractDecisions, extractNextSteps, pickFiles } from './core/brief'
 export type { BriefOptions } from './core/brief'
+export {
+  DEFAULT_LEVEL,
+  LEVELS,
+  LEVEL_TOKENS,
+  TIER_LABEL,
+  budgetFooter,
+  estimateTokens,
+  fitSections,
+  levelTokens,
+  parseLevel,
+} from './core/budget'
+export type { BudgetLevel, BudgetSection, FitResult, Tier } from './core/budget'
+export {
+  addProtectedPath,
+  armGuard,
+  assertWritable,
+  guardSummary,
+  noteSourceRead,
+  openSource,
+  protectedBy,
+  protectedPaths,
+  resetGuard,
+  verifyUnchanged,
+} from './core/roguard'
+export type { Change, Fp, GuardSummary } from './core/roguard'
 export { latestNote, listNotes, saveNote, saveNoteMd } from './core/handoff'
 export type { SaveNoteMdInput } from './core/handoff'
 export {

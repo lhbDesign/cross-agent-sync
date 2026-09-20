@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { openSource } from './core/roguard'
 
 /** 用户主目录；可用 ASS_HOME 覆盖（测试 / 沙箱 / 想把数据放在别处时） */
 export const HOME = process.env.ASS_HOME || os.homedir()
@@ -86,11 +87,15 @@ export function projectName(p: string | null | undefined): string | null {
 /**
  * 流式读 JSONL：大文件（几百 MB）也不会一次吃进内存。
  * 按字节找 \n，避免多字节 UTF-8 被切断。
+ *
+ * 句柄一律经 `openSource()` 取得（显式 O_RDONLY + 登记指纹），
+ * 使"只读"和"变更自证"在代码里只有一个入口，见 core/roguard.ts。
  */
 export function* readJsonl(file: string): Generator<Record<string, any>> {
   let fd: number | null = null
   try {
-    fd = fs.openSync(file, 'r')
+    fd = openSource(file)
+    if (fd === null) return
     const buf = Buffer.allocUnsafe(1 << 20)
     let pending = Buffer.alloc(0)
     let n: number
@@ -140,7 +145,8 @@ export function* readJsonlTail(file: string, maxBytes = 4 << 20): Generator<Reco
   const start = Math.max(0, size - maxBytes)
   let fd: number | null = null
   try {
-    fd = fs.openSync(file, 'r')
+    fd = openSource(file)
+    if (fd === null) return
     const buf = Buffer.allocUnsafe(size - start)
     const read = fs.readSync(fd, buf, 0, buf.length, start)
     let text = buf.subarray(0, read).toString('utf8')

@@ -1,6 +1,15 @@
 import type { SessionMeta, Turn } from '../types'
 import { plain, truncate } from '../util'
 import { contextMarkdown } from './context'
+import {
+  DEFAULT_LEVEL,
+  budgetFooter,
+  estimateTokens,
+  fitSections,
+  levelTokens,
+  type BudgetLevel,
+  type BudgetSection,
+} from './budget'
 
 /**
  * 交接摘要：把一次会话压成「下一个 agent 看完就能接着干」的 Markdown。
@@ -181,103 +190,212 @@ export interface BriefOptions {
   tailMessages?: number
   /** 会话里被改过的文件（adapter 拿得到的话），会加权 */
   touchedFiles?: string[]
+  /** 交接预算档位（tiny/small/standard/large/full）；缺省 standard */
+  level?: BudgetLevel
+  /** 直接给 token 上限，覆盖 level */
+  tokens?: number
 }
+
+/**
+ * 每节在各档位下的取量。集中放在一处，是为了让「降到下一档会少掉什么」一眼可见 ——
+ * 散在各处的魔法数字正是这个模块原先的问题。
+ */
+const T = {
+  goal: { full: { n: 3, chars: 600 }, compact: { n: 1, chars: 380 }, minimal: { n: 1, chars: 150 } },
+  timeline: { full: { n: 40, chars: 220 }, compact: { n: 18, chars: 140 }, minimal: { n: 6, chars: 80 } },
+  files: { full: { n: 25 }, compact: { n: 12 }, minimal: { n: 5 } },
+  highlight: { full: { n: 8, chars: 190 }, compact: { n: 5, chars: 140 }, minimal: { n: 3, chars: 110 } },
+  steps: { full: { n: 8 }, compact: { n: 5 }, minimal: { n: 3 } },
+  tail: { full: { msgs: 4, chars: 4000 }, compact: { msgs: 2, chars: 1400 }, minimal: { msgs: 1, chars: 500 } },
+  guess: { full: { n: 6 }, compact: { n: 4 }, minimal: { n: 0 } },
+  ctx: { full: { per: 0, chars: 0 }, compact: { per: 12, chars: 120 }, minimal: { per: 6, chars: 70 } },
+} as const
 
 export function buildBrief(meta: SessionMeta, turns: Turn[], opts: BriefOptions = {}): string {
-  const L: string[] = []
   const repo = meta.repo || meta.cwd || '(未知)'
   const users = turns.filter((t) => t.role === 'user')
-
-  L.push(`# 交接摘要 · ${meta.title}`)
-  L.push('')
-  L.push('| 项 | 值 |')
-  L.push('| --- | --- |')
-  L.push(`| 来源 Agent | **${meta.agentLabel}** (\`${meta.key}\`) |`)
-  L.push(`| 仓库 | \`${repo}\` |`)
-  if (meta.branch) L.push(`| 分支 | \`${meta.branch}\` |`)
-  L.push(`| 会话时间 | ${fmtRange(meta)} |`)
-  if (meta.model) L.push(`| 模型 | \`${meta.model}\` |`)
-  L.push(`| 规模 | ${users.length} 轮用户输入 / ${turns.length} 条消息 |`)
-  L.push('')
-
-  // ① agent 主动记录的（可信）—— 直接置顶
-  const ctxMd = contextMarkdown(meta.repo || meta.cwd || '')
-  if (ctxMd) {
-    L.push(ctxMd)
-    L.push('')
-  }
-
-  if (users.length) {
-    L.push('## 原始目标（用户最初的原话）')
-    L.push('')
-    for (const u of users.slice(0, 3)) L.push(`> ${truncate(u.text, 600)}`)
-    L.push('')
-  }
-
-  if (users.length) {
-    L.push('## 需求时间线')
-    L.push('')
-    users.slice(0, 40).forEach((u, i) => L.push(`${i + 1}. ${plain(u.text, 220)}`))
-    if (users.length > 40) L.push(`… 其余 ${users.length - 40} 条已省略（用 \`ass show <引用> --full\` 看全文）`)
-    L.push('')
-  }
-
   const files = pickFiles(turns, opts.touchedFiles)
-  if (files.length) {
-    L.push('## 涉及文件（按提及频次）')
-    L.push('')
-    for (const [f, n] of files.slice(0, opts.maxFiles ?? 25)) L.push(`- \`${f}\`${n > 1 ? ` (${n}×)` : ''}`)
-    L.push('')
-  }
-
   const highlights = assistantHighlights(turns)
-  if (highlights.length) {
-    L.push('## 助手关键结论（自动抽取，可能不完整）')
-    L.push('')
-    for (const h of highlights) L.push(`- ${h}`)
-    L.push('')
-  }
-
-  // ② 从对话里**猜**的决策 / 踩坑 —— 默认不出（见 extractDecisions 的注释）
-  if (opts.guess) {
-    const guessed = extractDecisions(turns)
-    if (guessed.length) {
-      L.push('## 决策与踩坑（从对话里推测，未经确认，仅供参考）')
-      L.push('')
-      for (const g of guessed) L.push(`- ${g}`)
-      L.push('')
-    }
-  }
-
   const { steps, kind } = extractNextSteps(turns)
-  if (steps.length) {
-    L.push(kind === 'section' ? '## 待办 / 待确认（启发式抽取）' : '## 消息末尾的要点（启发式抽取：可能是结论或状态，不一定是待办）')
-    L.push('')
-    for (const s of steps) L.push(kind === 'section' ? `- [ ] ${s}` : `- ${s}`)
-    L.push('')
-  }
 
-  // 最后一轮完整对话：从最后一次用户发言开始截
-  const nonTool = turns.filter((t) => t.role !== 'tool' && !(t.role === 'assistant' && t.text.trimStart().startsWith('▸')))
-  const lastUser = nonTool.map((t) => t.role).lastIndexOf('user')
-  const tailCount = opts.tailMessages ?? 4
-  const seg = lastUser >= 0 ? nonTool.slice(lastUser) : nonTool.slice(-tailCount)
-  const tail =
-    seg.length > tailCount + 2
-      ? [seg[0]!, { role: 'assistant' as const, text: `… (${seg.length - 1 - tailCount} 条助手消息已省略) …` }, ...seg.slice(-tailCount)]
-      : seg
-  if (tail.length) {
-    L.push('## 最后一轮完整对话')
-    L.push('')
-    for (const t of tail) {
-      L.push(`**${t.role === 'user' ? '用户' : '助手'}**`)
-      L.push('')
-      L.push(truncate(t.text, 4000))
-      L.push('')
+  /** 节的输出顺序 = 声明顺序；裁剪顺序由 priority 决定 —— 两者刻意解耦 */
+  const sections: BudgetSection[] = []
+
+  sections.push({
+    id: 'meta',
+    label: '会话元信息',
+    priority: 0,
+    mandatory: true,
+    render: () => {
+      const L: string[] = [`# 交接摘要 · ${meta.title}`, '']
+      L.push('| 项 | 值 |')
+      L.push('| --- | --- |')
+      L.push(`| 来源 Agent | **${meta.agentLabel}** (\`${meta.key}\`) |`)
+      L.push(`| 仓库 | \`${repo}\` |`)
+      if (meta.branch) L.push(`| 分支 | \`${meta.branch}\` |`)
+      L.push(`| 会话时间 | ${fmtRange(meta)} |`)
+      if (meta.model) L.push(`| 模型 | \`${meta.model}\` |`)
+      L.push(`| 规模 | ${users.length} 轮用户输入 / ${turns.length} 条消息 |`)
+      return L.join('\n')
+    },
+  })
+
+  // ① agent 主动记录的（可信）—— 置顶输出，且**最后才降档**（priority 0 + mandatory）
+  sections.push({
+    id: 'context',
+    label: '主动记录的决策/踩坑',
+    priority: 0,
+    mandatory: true,
+    render: (tier) => {
+      const t = T.ctx[tier]
+      return contextMarkdown(repo, {
+        maxPerKind: t.per || undefined,
+        chars: t.chars || undefined,
+      })
+    },
+  })
+
+  sections.push({
+    id: 'goal',
+    label: '原始目标',
+    priority: 1,
+    render: (tier) => {
+      if (!users.length) return ''
+      const t = T.goal[tier]
+      const L = ['## 原始目标（用户最初的原话）', '']
+      for (const u of users.slice(0, t.n)) L.push(`> ${truncate(u.text, t.chars)}`)
+      return L.join('\n')
+    },
+  })
+
+  // 待办排在「时间线」前面输出，但**优先级高于**时间线与文件 ——
+  // 换 agent 时最该先看到的就是"接下来要做什么"
+  sections.push({
+    id: 'todos',
+    label: '待办 / 待确认',
+    priority: 2,
+    render: (tier) => {
+      if (!steps.length) return ''
+      const t = T.steps[tier]
+      const head =
+        kind === 'section'
+          ? '## 待办 / 待确认（启发式抽取）'
+          : '## 消息末尾的要点（启发式抽取：可能是结论或状态，不一定是待办）'
+      const L = [head, '']
+      for (const s of steps.slice(0, t.n)) L.push(kind === 'section' ? `- [ ] ${s}` : `- ${s}`)
+      return L.join('\n')
+    },
+  })
+
+  sections.push({
+    id: 'timeline',
+    label: '需求时间线',
+    priority: 3,
+    render: (tier) => {
+      if (!users.length) return ''
+      const t = T.timeline[tier]
+      const L = ['## 需求时间线', '']
+      users.slice(0, t.n).forEach((u, i) => L.push(`${i + 1}. ${plain(u.text, t.chars)}`))
+      if (users.length > t.n) L.push(`… 其余 ${users.length - t.n} 条已省略（用 \`ass show <引用> --full\` 看全文）`)
+      return L.join('\n')
+    },
+  })
+
+  sections.push({
+    id: 'files',
+    label: '涉及文件',
+    priority: 6,
+    render: (tier) => {
+      if (!files.length) return ''
+      const t = T.files[tier]
+      const cap = Math.min(t.n, opts.maxFiles ?? t.n)
+      const L = ['## 涉及文件（按提及频次）', '']
+      for (const [f, n] of files.slice(0, cap)) L.push(`- \`${f}\`${n > 1 ? ` (${n}×)` : ''}`)
+      return L.join('\n')
+    },
+  })
+
+  sections.push({
+    id: 'highlights',
+    label: '助手关键结论',
+    priority: 5,
+    render: (tier) => {
+      if (!highlights.length) return ''
+      const t = T.highlight[tier]
+      const L = ['## 助手关键结论（自动抽取，可能不完整）', '']
+      for (const h of highlights.slice(0, t.n)) L.push(`- ${plain(h, t.chars)}`)
+      return L.join('\n')
+    },
+  })
+
+  // ② 从对话里**猜**的决策 / 踩坑 —— 默认不出（见 extractDecisions 的注释），
+  //    即使显式打开也是**优先级最低**的一节：预算一紧就先丢它
+  sections.push({
+    id: 'guess',
+    label: '推测的决策与踩坑',
+    priority: 7,
+    render: (tier) => {
+      if (!opts.guess) return ''
+      const t = T.guess[tier]
+      if (!t.n) return ''
+      const guessed = extractDecisions(turns, t.n)
+      if (!guessed.length) return ''
+      const L = ['## 决策与踩坑（从对话里推测，未经确认，仅供参考）', '']
+      for (const g of guessed) L.push(`- ${g}`)
+      return L.join('\n')
+    },
+  })
+
+  sections.push({
+    id: 'tail',
+    label: '最后一轮完整对话',
+    priority: 4,
+    render: (tier) => {
+      const t = T.tail[tier]
+      const tailCount = Math.min(opts.tailMessages ?? t.msgs, t.msgs)
+      const nonTool = turns.filter(
+        (x) => x.role !== 'tool' && !(x.role === 'assistant' && x.text.trimStart().startsWith('▸')),
+      )
+      const lastUser = nonTool.map((x) => x.role).lastIndexOf('user')
+      const seg = lastUser >= 0 ? nonTool.slice(lastUser) : nonTool.slice(-tailCount)
+      const tail =
+        seg.length > tailCount + 2
+          ? [
+              seg[0]!,
+              { role: 'assistant' as const, text: `… (${seg.length - 1 - tailCount} 条助手消息已省略) …` },
+              ...seg.slice(-tailCount),
+            ]
+          : seg
+      if (!tail.length) return ''
+      const L = ['## 最后一轮完整对话', '']
+      for (const x of tail) {
+        L.push(`**${x.role === 'user' ? '用户' : '助手'}**`)
+        L.push('')
+        L.push(truncate(x.text, t.chars))
+        L.push('')
+      }
+      return L.join('\n').trimEnd()
+    },
+  })
+
+  const level = opts.level ?? DEFAULT_LEVEL
+  const budget = opts.tokens ?? levelTokens(level)
+
+  let fit = fitSections(sections, budget)
+  let footer = ''
+  if (fit.demoted.length || fit.dropped.length) {
+    // 预算声明自己也要占额度。先按未预留拟合一次、量出声明实际多大，再按"预算 − 声明"
+    // 重拟合一次 —— 这样既不浪费额度（预留写死会浪费），也不会被自己的脚注撑爆预算。
+    const probe = budgetFooter(fit, level, meta.key)
+    const reserved = estimateTokens(probe)
+    if (reserved > 0 && Number.isFinite(budget)) {
+      fit = fitSections(sections, Math.max(1, budget - reserved))
     }
+    footer = budgetFooter(fit, level, meta.key)
   }
-  return L.join('\n')
+  return footer ? `${fit.md}\n\n${footer}` : fit.md
 }
+
 
 function fmtRange(meta: SessionMeta): string {
   // 避免循环依赖，这里直接内联一份最小实现

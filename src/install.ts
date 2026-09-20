@@ -3,6 +3,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { HOME, exists, isDir, readJsonFile, writeJsonFile } from './util'
 import { sqliteBackend } from './sqlite'
+import { assertWritable } from './core/roguard'
 
 /**
  * 把 MCP server + 规则块接进本机的各个 agent。
@@ -22,9 +23,10 @@ let DRY = false
 export function setDryRun(v: boolean): void {
   DRY = v
 }
-/** 统一写入口：dry-run 时只报告不落盘 */
+/** 统一写入口：dry-run 时只报告不落盘；受保护区内的路径一律拒绝 */
 function writeText(file: string, text: string, needBackup = true): void {
   if (DRY) return
+  assertWritable(file, 'ass install 写配置')
   if (needBackup) backupOnce(file)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, text)

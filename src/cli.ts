@@ -26,6 +26,9 @@ import {
   type TaskView,
 } from './core/task'
 import { addContext, contextFile, contextLine, contextMarkdown, KIND_LABEL, readContext, updateContext, type ContextKind } from './core/context'
+import { LEVELS, estimateTokens, parseLevel } from './core/budget'
+import { armGuard, assertWritable, guardSummary, protectedPaths } from './core/roguard'
+import { buildAdapters } from './adapters/registry'
 import { formatSearchResult, searchSessions } from './core/search'
 import {
   detectAgents,
@@ -62,7 +65,7 @@ interface Args {
 const VALUE_FLAGS = [
   'repo', 'limit', 'agent', 'rounds', 'tail', 'since', 'out', 'summary', 'files', 'scan',
   'decision', 'decide', 'dead-end', 'deadend', 'constraint', 'todo', 'note', 'done', 'remove',
-  'label', 'goal',
+  'label', 'goal', 'budget', 'tokens',
 ]
 
 /** 记录类参数：flag 名 → 条目类型 */
@@ -279,6 +282,19 @@ function cmdList(args: Args, cfg: Config): void {
   if (errors.length) console.log(c.yellow(`\n读取失败：${errors.join('; ')}`))
 }
 
+/**
+ * 用户指定路径的写出口 —— 一律先过 `assertWritable`。
+ *
+ * 四处 `--out` 都走这里，是为了让"能不能写"只有一个判断点：
+ * 会话数据的保护区由 adapter 自报 + 读即登记两条来源拼成（见 core/roguard.ts），
+ * 分散判断必然漏掉某一个。
+ */
+function justWrite(file: string, text: string, what: string): void {
+  assertWritable(file, what)
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, text)
+}
+
 function locate(ref: string | undefined, cfg: Config, fallbackRepo?: string): ReturnType<typeof findSession> {
   if (ref) return findSession(ref, cfg)
   const repo = fallbackRepo || process.cwd()
@@ -356,15 +372,22 @@ function cmdBrief(args: Args, cfg: Config): void {
   const found = locate(args.positional[0], cfg)
   if (!found) return usage(`没找到会话：${args.positional[0] || process.cwd()}`)
   const turns = readSession(found)
+  const rawLevel = args.flags.budget
+  const level = rawLevel ? parseLevel(rawLevel) : null
+  if (rawLevel && !level) return usage(`--budget 只认：${LEVELS.join(' / ')}`)
   const md = buildBrief(found.meta, turns, {
     maxFiles: Number(args.flags.files || 25),
     tailMessages: Number(args.flags.tail || 4),
     guess: Boolean(args.flags.guess),
+    level: level ?? undefined,
+    tokens: args.flags.tokens ? Number(args.flags.tokens) : undefined,
   })
   const out = args.flags.out as string | undefined
   if (out) {
-    fs.writeFileSync(out, md)
-    console.log(`已写入 ${out}（${md.length} 字符）`)
+    // 用户给的路径可能是任何地方 —— 包括某个 agent 的会话文件。
+    // 这一步不是形式主义：`--out ~/.claude/projects/x.jsonl` 会**静默毁掉**一条会话。
+    justWrite(out, md, 'ass brief --out')
+    console.log(`已写入 ${out}（${md.length} 字符，约 ${estimateTokens(md)} tokens）`)
     return
   }
   console.log(md)
@@ -564,7 +587,7 @@ function cmdResume(args: Args, cfg: Config): void {
   const out = args.flags.out as string | undefined
   if (out) {
     const file = path.resolve(out)
-    fs.writeFileSync(file, md)
+    justWrite(file, md, 'ass resume --out')
     console.log(c.green(`已写入 ${file}`) + c.dim(`（${md.length} 字符）`))
     return
   }
@@ -960,6 +983,24 @@ function cmdDoctor(args: Args, cfg: Config): void {
   console.log('')
   console.log(c.bold('agent'))
   cmdAgents({ cmd: 'agents', positional: [], flags: args.flags.json ? { json: true } : {} }, cfg)
+
+  // 只读自证：本次进程读过的源文件是否原样未动。
+  // 注意它证明的是"**我们**没动过"，不是"没人动过" —— 后者不在这个进程的职责内。
+  const g = guardSummary()
+  console.log('')
+  console.log(c.bold('源数据保护'))
+  console.log(`  受保护区    ${g.roots} 处${g.roots ? c.dim('（用 `ass doctor --paths` 看清单）') : ''}`)
+  console.log(`  已读源文件  ${g.opened} 个（均已留指纹）`)
+  // 「正在使用的会话」单列：那些文件本来就一直在被追加，混进来会让这个信号恒亮、等于没有
+  const active = g.active ? c.dim(`（另有 ${g.active} 个是正在使用的会话，仍在被写，不计）`) : ''
+  console.log(
+    g.changed === 0
+      ? `  变更自证    ${c.green('本次运行未改动任何源数据')} ${active}`
+      : `  变更自证    ${c.yellow(`${g.changed} 个文件在读后被改动，且不是活跃会话`)} ${active}`,
+  )
+  if (args.flags.paths) {
+    for (const p of protectedPaths()) console.log(`    ${c.dim(p.path)}  ${c.dim(`— ${p.why}`)}`)
+  }
 }
 
 function usage(msg?: string): void {
@@ -976,6 +1017,8 @@ ${c.bold('搬上下文')}
   ass last [引用]           把最后一问原样搬过来（--rounds 3 连问多轮，含图片落盘）
   ass brief [引用]          生成交接摘要 Markdown（--out 文件.md，--tail 4，--files 25）
                           --guess 额外附上「从对话里猜的决策/踩坑」（默认关，不准）
+                          --budget tiny|small|standard|large|full  按上下文预算自适应裁剪
+                          --tokens 6000 直接给 token 上限（覆盖 --budget）
   ass note [引用]           收尾：把摘要存进本仓库，下次任何 agent 进来都能看到
   ass context             看/记 决策·踩坑·约束·待办（--decision/--dead-end/--constraint/--todo）
                           勾掉待办 --done c4，删除 --remove c4，连已完成一起看 --all
@@ -1004,7 +1047,7 @@ ${c.bold('接入 / 维护')}
   ass detect               自检索：扫盘找出本机所有可能的 agent（--write 写入配置草案）
   ass repos                有历史的仓库列表
   ass config [--init]      打印/初始化配置文件
-  ass doctor               自检
+  ass doctor               自检（--paths 看受保护区清单 + 只读变更自证）
 
 ${c.bold('引用')}
   #1                      上一次 list 的第 1 条（注意：跨进程不稳，任务里请用下面两种）
@@ -1024,6 +1067,13 @@ function main(): void {
   }
   const args = parseArgs(argv)
   const cfg = loadConfig()
+  // 开跑前先把受保护区武装起来：边界来自每个 adapter 自报的数据源。
+  // 放在 switch 之前，是为了让**任何**命令的写路径都被同一套边界约束。
+  try {
+    armGuard(buildAdapters(cfg, { includeUnavailable: true }))
+  } catch {
+    /* 边界拿不到不该让命令跑不起来 */
+  }
   switch (args.cmd) {
     case 'status':
       return cmdStatus(args, cfg)

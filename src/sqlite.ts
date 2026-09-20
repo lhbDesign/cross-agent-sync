@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { exists } from './util'
+import { noteSourceRead } from './core/roguard'
 
 /**
  * 零依赖读 SQLite（OpenCode / Cursor / Kiro 这类 agent 用 db 存会话）。
@@ -61,7 +62,9 @@ function openCli(file: string): Db {
   return {
     backend: 'sqlite3(cli)',
     query<T>(sql: string): T[] {
-      const out = execFileSync('sqlite3', ['-json', file, sql], {
+      // `-readonly` 不能省：sqlite3 命令行默认以可写方式打开，遇到需要恢复的库
+      // 会创建 -journal/-wal 旁文件甚至回写 —— 那就直接违背了"只读聚合"的前提。
+      const out = execFileSync('sqlite3', ['-readonly', '-json', file, sql], {
         encoding: 'utf8',
         maxBuffer: 256 << 20,
         timeout: 120_000,
@@ -108,6 +111,9 @@ export function sqliteBackend(): { backend: 'node:sqlite' | 'sqlite3(cli)' | nul
 
 export function openSqlite(file: string): DbOpenResult {
   if (!exists(file)) return { db: null, backend: null, reason: `文件不存在: ${file}` }
+  // 句柄由 node:sqlite / sqlite3 自己持有，我们插不进去 —— 但"读过它"必须登记，
+  // 否则 Cursor 的 state.vscdb 所在目录不会进入受保护区（见 core/roguard.ts）。
+  noteSourceRead(file)
   const mod = getNodeSqlite()
   if (mod?.DatabaseSync) {
     try {
