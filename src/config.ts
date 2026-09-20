@@ -11,6 +11,7 @@ export const DATA_DIR = process.env.ASS_DATA_DIR || path.join(HOME, '.local', 's
 export const CACHE_DIR = path.join(DATA_DIR, 'cache')
 export const HANDOFF_DIR = path.join(DATA_DIR, 'handoffs')
 export const ATTACH_DIR = path.join(DATA_DIR, 'attachments')
+export const TASK_DIR = path.join(DATA_DIR, 'tasks')
 
 export const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json')
 

@@ -159,12 +159,27 @@ export function rulesBlock(): string {
 之前那个会话 / 上次说的 / handoff」，又或者任务明显在延续某个你手上没有的上下文时：
 
 1. 先看本仓库有没有上下文（MCP: \`session_status\`；命令行: \`ass\`）——
-   它会同时给出「上次收尾的摘要」和「之前记录过的决策/踩坑/待办」；
+   它会同时给出「进行中的任务」「上次收尾的摘要」和「之前记录过的决策/踩坑/待办」；
 2. 需要更多历史就列出该仓库跨 agent 的最近会话（\`session_list\` / \`ass list\`），
    用「序号 · agent · 时间 · 标题 · 最近一句需求」列前 5 条，**问用户要同步哪一个**（不要自己替用户选）；
 3. 用户选定后取交接摘要（\`session_handoff\` / \`ass show <引用>\`），用几句话复述
    「目标 / 已完成 / 待办 / 下一步」，等用户确认后再动手；
 4. 要把某个 agent 刚问过的问题原样搬过来（含图片）：\`session_last\` / \`ass last <引用>\`。
+
+### 一件活跨多个 agent：任务
+
+一件事常常跨 agent、跨天做完（「需求 1-3 用 claude 做完，4-5 换 codex」）。
+在 \`ass\` 眼里那本来只是一堆互不相干的会话——**任务**就是把它们绑成一件事。
+
+- **开始一件新活、或换 agent 接着做同一件活** → 用 \`session_task\` 把当前会话绑进去
+  （命令行：\`ass task add <任务名>\`）。任务名**由用户定**；新建之前先不带参数列一下已有任务，
+  **不要自己替用户划任务边界**——这和「不要自己替用户选会话」是同一条纪律。
+- **换 agent 之前**，把这一段的进展记一句（\`session_task\` 的 \`note\`，如「卡在退款回调」「已完成」）。
+- 用户说「继续 X / 接着 X 任务 / 上次那个 X」→ **先 \`session_task_resume\`** 拿任务全貌
+  （原始目标 / 决策 / 各段进展 / 待办），复述「目标 / 已完成 / 待办 / 下一步」再动手。
+  不要把用户已经记在任务里的事，再让他讲一遍。
+- 命令行等价物：\`ass resume <任务>\` 看总览；\`ass resume <任务> --save\` 把它存成本仓库的交接记录，
+  这样即使对方 agent 没接 MCP 也能看到。
 
 ### 干活过程中：随手记，别攒到最后
 
@@ -192,8 +207,14 @@ export function rulesBlock(): string {
   且不要把整段原文贴进回复 —— 150 轮对话里大部分是来回试错，真正有价值的是最终状态。
 - 引用交接摘要里的结论时，要说明它来自「之前某个 agent 的会话」，不要当成你自己验证过的事实；
   涉及代码现状的结论，仍然要用当前代码去核实。
-- 不要为了同步去修改其它 agent 的会话文件；本工具全程只读。
-- 没有 MCP 工具时，退回命令行：\`ass\` / \`ass list\` / \`ass show "#3"\` / \`ass last "#3"\` / \`ass context\`。
+- 不要为了同步去修改其它 agent 的会话文件。对**别的 agent 的会话数据**，本工具严格只读；
+  \`session_remember\` / \`session_task\` 只写本工具自己的数据目录（\`~/.local/share/agent-session-sync\`）。
+- **没有 MCP 工具时**（Cursor / Trae 这类），退回命令行。最常用的就是跨 agent 搬上下文这一条：
+  \`ass brief <引用>\`（例：\`ass brief claude:4134ec80\`）——它输出一份交接摘要，
+  你读它就能接上另一个 agent 的活。其余：\`ass\`（首屏）/ \`ass list\` /
+  \`ass show <引用>\` / \`ass last <引用>\` / \`ass context\` / \`ass task\` / \`ass resume <任务>\`。
+- 引用一律用 \`agent:id前缀\`（如 \`claude:4134ec80\`）这种**稳定形式**；
+  \`#3\` 是「上次列表的第 3 条」，每次列会话都会被重写，**别写进笔记或脚本**。
 ${MARK_END}`
 }
 
@@ -324,12 +345,18 @@ function jsonMcpFile(file: string, target: string, install: boolean): Step {
   if (install && !isInstalled(target)) {
     return { target, path: file, action: 'missing', detail: '本机没装这个 agent，已跳过' }
   }
-  if (!exists(file)) return { target, path: file, action: 'missing' }
+  // 装了这个 agent、但配置文件还不存在 → **给它建一个**。
+  //
+  // 以前这里直接返回 missing（「不创建 agent 配置目录」），后果是 Cursor / Kiro / Windsurf
+  // 这类**默认没有配置文件**的 agent 永远接不上 MCP —— 哪怕你已经装了 Cursor。
+  // 判据仍然是 isInstalled()，所以「本机什么都没有」时依旧一个文件都不建。
+  const had = exists(file)
+  if (!had && !install) return { target, path: file, action: 'missing' }
   const cfg = readJsonFile<Record<string, any>>(file, { mcpServers: {} })
   cfg.mcpServers = cfg.mcpServers || {}
   if (install) {
     const entry = { command: process.execPath, args: [mcpScript()] }
-    if (JSON.stringify(cfg.mcpServers[SERVER_NAME]) === JSON.stringify(entry)) {
+    if (had && JSON.stringify(cfg.mcpServers[SERVER_NAME]) === JSON.stringify(entry)) {
       return { target, path: file, action: 'unchanged' }
     }
     cfg.mcpServers[SERVER_NAME] = entry
@@ -338,7 +365,7 @@ function jsonMcpFile(file: string, target: string, install: boolean): Step {
     delete cfg.mcpServers[SERVER_NAME]
   }
   writeText(file, `${JSON.stringify(cfg, null, 2)}\n`)
-  return { target, path: file, action: install ? 'updated' : 'removed', detail: 'mcpServers' }
+  return { target, path: file, action: install ? (had ? 'updated' : 'created') : 'removed', detail: 'mcpServers' }
 }
 
 // ---------------------------------------------------------------- 对外 API
@@ -420,6 +447,89 @@ export function deinitProject(dir: string, opts: { dryRun?: boolean } = {}): Ste
 }
 
 /** 各 agent 的检测结果，给 `ass install --dry-run` / doctor 用 */
+// ---------------------------------------------------------------- 项目级 MCP 配置
+
+/**
+ * 支持**项目级** MCP 配置的 agent：在仓库里放一个文件，打开这个项目就自动生效。
+ *
+ * 为什么要这一套：`ass install` 只写**用户级**配置，而且只覆盖它知道怎么写的那几个
+ * （Claude Code / Codex / OpenCode / Kiro）。Cursor 这类没有用户级全局 MCP 文件的，
+ * 只能靠项目文件——而 `ass install` 的设计是「不创建 agent 配置目录」，所以一直没覆盖。
+ */
+export const PROJECT_MCP_TARGETS: { id: string; label: string; rel: string }[] = [
+  { id: 'cursor', label: 'Cursor', rel: '.cursor/mcp.json' },
+  { id: 'claude', label: 'Claude Code', rel: '.mcp.json' },
+]
+
+/** 配置内容（`ass mcp` 打印它，给 Trae 这种只能手工贴的用） */
+export function mcpConfigJson(): string {
+  return JSON.stringify({ mcpServers: { [SERVER_NAME]: mcpEntry() } }, null, 2) + '\n'
+}
+
+/** 在项目里创建 MCP 配置。幂等：内容一致就不动 */
+export function installProjectMcp(dir: string, opts: { dryRun?: boolean; only?: string } = {}): Step[] {
+  setDryRun(Boolean(opts.dryRun))
+  const steps: Step[] = []
+  const entry = mcpEntry()
+  const list = opts.only ? PROJECT_MCP_TARGETS.filter((t) => t.id === opts.only) : PROJECT_MCP_TARGETS
+  if (!list.length) {
+    setDryRun(false)
+    return [
+      {
+        target: String(opts.only),
+        path: dir,
+        action: 'skipped',
+        detail: `不认识这个 agent；可用的是：${PROJECT_MCP_TARGETS.map((t) => t.id).join(' / ')}`,
+      },
+    ]
+  }
+  for (const t of list) {
+    const file = path.join(dir, t.rel)
+    const cfg = readJsonFile<Record<string, unknown>>(file, {})
+    const servers = (cfg.mcpServers as Record<string, unknown>) || {}
+    const cur = servers[SERVER_NAME] as { command?: string; args?: string[] } | undefined
+    if (cur && cur.command === entry.command && JSON.stringify(cur.args) === JSON.stringify(entry.args)) {
+      steps.push({ target: t.id, path: file, action: 'unchanged' })
+      continue
+    }
+    servers[SERVER_NAME] = entry
+    const had = exists(file)
+    writeText(file, JSON.stringify({ ...cfg, mcpServers: servers }, null, 2) + '\n')
+    steps.push({ target: t.id, path: file, action: had ? 'updated' : 'created' })
+  }
+  setDryRun(false)
+  return steps
+}
+
+/** 撤销：只摘我们那一项；文件里还有别的 MCP server 就留着 */
+export function uninstallProjectMcp(dir: string, opts: { dryRun?: boolean } = {}): Step[] {
+  setDryRun(Boolean(opts.dryRun))
+  const steps: Step[] = []
+  for (const t of PROJECT_MCP_TARGETS) {
+    const file = path.join(dir, t.rel)
+    if (!exists(file)) {
+      steps.push({ target: t.id, path: file, action: 'skipped' })
+      continue
+    }
+    const cfg = readJsonFile<Record<string, unknown>>(file, {})
+    const servers = (cfg.mcpServers as Record<string, unknown>) || {}
+    if (!(SERVER_NAME in servers)) {
+      steps.push({ target: t.id, path: file, action: 'unchanged' })
+      continue
+    }
+    delete servers[SERVER_NAME]
+    if (!Object.keys(servers).length && Object.keys(cfg).length === 1) {
+      removeFile(file)
+      steps.push({ target: t.id, path: file, action: 'removed', detail: '文件里只有我们这一项，整个删掉了' })
+    } else {
+      writeText(file, JSON.stringify({ ...cfg, mcpServers: servers }, null, 2) + '\n')
+      steps.push({ target: t.id, path: file, action: 'removed' })
+    }
+  }
+  setDryRun(false)
+  return steps
+}
+
 export function detectAgents(): { id: string; label: string; config: string; exists: boolean; installed: boolean }[] {
   const claudeCfg = readJsonFile<Record<string, any>>(CLAUDE_JSON, {})
   const cursorCfg = readJsonFile<Record<string, any>>(CURSOR_MCP, { mcpServers: {} })

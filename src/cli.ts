@@ -7,12 +7,41 @@ import { DATA_DIR, configPath, ensureConfig, loadConfig, saveConfig, type Config
 import { agentStatus, findSession, listSessions, readSession } from './core/store'
 import { saveImages } from './core/attach'
 import { buildBrief } from './core/brief'
-import { latestNote, listNotes, saveNote } from './core/handoff'
+import { latestNote, listNotes, saveNote, saveNoteMd } from './core/handoff'
+import {
+  currentSession,
+  findTask,
+  taskAttach,
+  taskCreate,
+  taskDetach,
+  taskLine,
+  taskList,
+  taskRemove,
+  taskResumeMarkdown,
+  taskSetNote,
+  taskSetStatus,
+  taskSummary,
+  taskView,
+  type TaskRecord,
+  type TaskView,
+} from './core/task'
 import { addContext, contextFile, contextLine, contextMarkdown, KIND_LABEL, readContext, updateContext, type ContextKind } from './core/context'
 import { formatSearchResult, searchSessions } from './core/search'
-import { detectAgents, deinitProject, doctor, initProject, installAll, rulesBlock, uninstallAll } from './install'
+import {
+  detectAgents,
+  deinitProject,
+  doctor,
+  initProject,
+  installAll,
+  installProjectMcp,
+  mcpConfigJson,
+  PROJECT_MCP_TARGETS,
+  rulesBlock,
+  uninstallAll,
+  uninstallProjectMcp,
+} from './install'
 import { applyDetected, detectSources } from './detect'
-import { fmtTime, plain } from './util'
+import { dispWidth, fmtTime, plain, truncWidth } from './util'
 import { maybeReexec } from './bootstrap'
 
 const TTY = process.stdout.isTTY === true
@@ -33,6 +62,7 @@ interface Args {
 const VALUE_FLAGS = [
   'repo', 'limit', 'agent', 'rounds', 'tail', 'since', 'out', 'summary', 'files', 'scan',
   'decision', 'decide', 'dead-end', 'deadend', 'constraint', 'todo', 'note', 'done', 'remove',
+  'label', 'goal',
 ]
 
 /** 记录类参数：flag 名 → 条目类型 */
@@ -108,41 +138,120 @@ function printTurns(turns: Turn[]): void {
 
 // ---------------------------------------------------------------- 命令
 
+/**
+ * 首屏只回答四个问题：有几个会话 / 有哪些任务 / 怎么合并 / 怎么恢复。
+ * 交接摘要**不在这里展开**（以前会顶 18 行，把真正要看的东西全埋了）——要全文用 `ass notes`。
+ */
 function cmdStatus(args: Args, cfg: Config): void {
   const repo = (args.flags.repo as string) || process.cwd()
   const limit = Number(args.flags.limit || cfg.defaultLimit || 15)
-  const { sessions, errors } = listSessions({ repo, limit }, cfg)
-  console.log(c.bold(`仓库 ${sessions[0]?.repo || repo}`))
-  console.log(c.dim(`配置 ${configPath()}   数据 ${DATA_DIR}`))
+  const { sessions, errors, adapters } = listSessions({ repo, limit }, cfg)
+  const repoDir = sessions[0]?.repo || repo
 
-  const ctxLine = contextLine(sessions[0]?.repo || repo)
-  if (ctxLine) console.log(`记录着的上下文：${c.cyan(ctxLine)}   ${c.dim('（ass context 看详情）')}`)
+  console.log(c.bold(`仓库 ${repoDir}`))
 
-  const note = latestNote(sessions[0]?.repo || repo)
-  if (note) {
+  const tasks = taskList({ repo: repoDir })
+  const ctxLine = contextLine(repoDir)
+  const head = [`${sessions.length} 个会话`]
+  if (tasks.length) head.push(`${tasks.length} 个任务`)
+  console.log(c.dim(head.join(' · ')))
+
+  if (tasks.length) {
     console.log('')
-    console.log(c.bold(`上次收尾的记录（${fmtTime(note.entry.at)}，来自 ${note.entry.key}）`))
-    const body = note.content.replace(/^<!--[\s\S]*?-->\n/, '')
-    const preview = body.split('\n').slice(0, 18).join('\n')
-    console.log(c.dim('─'.repeat(60)))
-    console.log(preview)
-    if (body.split('\n').length > 18) console.log(c.dim(`… 完整内容见 ${note.file}`))
-    console.log(c.dim('─'.repeat(60)))
+    console.log(c.bold('任务'))
+    for (const t of tasks) {
+      const v = taskView(t.id, cfg)
+      console.log(`${c.cyan(t.id)}  ${c.bold(t.name)}   ${c.dim(taskSummary(t))}`)
+      if (v?.goal?.text) console.log(`    ${c.dim('目标')}   ${v.goal.text}`)
+      console.log(`    ${c.dim('接着做')} ${c.green(`在新 agent 里说「继续 ${t.name}」`)}`)
+    }
+    console.log('')
+    console.log(c.dim('  任务 = 把跨 agent 的多段会话绑成一件事。换 agent 时不用复述，说一句「继续 <任务名>」即可。'))
+  }
+
+  if (ctxLine) {
+    console.log('')
+    console.log(`${c.bold('记着的上下文')}  ${c.cyan(ctxLine)}`)
+    console.log(c.dim('  agent 干活时随手记下的判断 / 坑 / 待办。换 agent 时它会置顶出现在交接摘要里，'))
+    console.log(c.dim('  不用重新讲一遍。ass context 看详情。'))
   }
 
   console.log('')
   if (sessions.length === 0) {
     console.log(c.yellow('这个仓库还没有任何 agent 的会话记录。'))
     console.log(c.dim('换个 agent 聊过之后，这里就会出现跨 agent 的历史。'))
-  } else {
-    const byAgent = new Map<string, number>()
-    for (const s of sessions) byAgent.set(s.agent, (byAgent.get(s.agent) || 0) + 1)
-    console.log(c.dim(`本仓库最近会话：${[...byAgent].map(([k, v]) => `${k}×${v}`).join('  ')}`))
-    console.log('')
-    printList(sessions, { showRepo: false })
-    console.log('')
-    console.log(c.dim('继续某个会话：  ass show #1       把最后一问搬到新 agent：  ass last #1       生成交接摘要：  ass brief #1'))
+    return
   }
+
+  console.log(c.bold('会话'))
+  const byAgent = new Map(adapters.map((a) => [a.id, a]))
+  const idxW = String(sessions.length).length
+  const agentW = Math.max(...sessions.map((s) => s.agent.length), 0)
+  // 引用给**完整 id**：`--resume` 只认完整 id（实测 8 位前缀不好使），
+  // 而 ass brief / session_handoff 是前缀匹配，完整 id 一样能用 —— 一个形式两用。
+  const refs = sessions.map((s) => `${s.agent}:${s.id}`)
+  const refW = Math.max(...refs.map((r) => r.length), 0)
+  // 前缀部分（行首到标题列）先拼好，用**实际字符串**量宽度 ——
+  // 手算常量必错：`turns.padEnd(4)` 是按字符补的，而「3轮」是 2 字符占 3 列。
+  const leads = sessions.map((s, i) => {
+    const turns = s.turns ? `${s.turns}轮` : s.bubbles ? `${s.bubbles}条` : ''
+    const date = fmtTime(s.updatedAt || s.startedAt).slice(5)
+    return { turns, date, idx: String(i + 1).padStart(idxW, ' ') }
+  })
+  const leadW = Math.max(
+    ...leads.map((l) => dispWidth(`${l.idx} ${'x'.repeat(agentW)} ${l.date} ${l.turns.padEnd(4)} `)),
+  )
+  // 终端宽度拿不到（管道 / 重定向）时按 120 列保守处理
+  const cols = process.stdout.columns && process.stdout.columns > 80 ? process.stdout.columns : 120
+  const titleMax = Math.max(16, cols - leadW - refW - 2)
+
+  const rows = sessions.map((s, i) => {
+    const l = leads[i]!
+    // 按**显示宽度**截断：中文占 2 列，按字符数截在中文下必然超宽
+    const title = truncWidth(plain(s.title, 200), titleMax)
+    const head = `${l.idx} ${s.agent.padEnd(agentW)} ${l.date} ${l.turns.padEnd(4)} ${title}`
+    const left =
+      `${c.dim(l.idx)} ${c.cyan(s.agent.padEnd(agentW))} ` +
+      `${c.dim(l.date)} ${c.dim(l.turns.padEnd(4))} ${title}`
+    // 标题和最新一句常常是同一句（只有 1 轮时），重复显示没意义
+    const preview = s.preview && s.preview !== s.title ? truncWidth(plain(s.preview, 300), cols - leadW) : ''
+    return { left, ref: refs[i]!, preview, pad: dispWidth(head) }
+  })
+  const w = Math.max(...rows.map((r) => r.pad), 0)
+  const indent = ' '.repeat(leadW)
+  for (const r of rows) {
+    console.log(`${r.left}${' '.repeat(Math.max(w - r.pad, 1))}${c.cyan(r.ref)}`)
+    if (r.preview) console.log(`${indent}${c.dim(r.preview)}`)
+  }
+
+  // 「怎么继续」用**最近那一条**做例子，两条路各讲一次——不必为每一行重复同样的话
+  const newest = sessions[0]!
+  const newestCmd = byAgent.get(newest.agent)?.resumeCmd?.(newest) || ''
+  const newestRef = `${newest.agent}:${newest.id}`
+  console.log('')
+  console.log(c.bold('怎么继续') + c.dim('（以第 1 条为例；想弄别的会话，把引用换成对应那行即可）'))
+  if (newestCmd) {
+    console.log(`  ${c.dim('同一个 agent 接着聊')}`)
+    console.log(`      ${c.green(newestCmd)}`)
+  }
+  console.log(`  ${c.dim('换个 agent 带上这段上下文')}`)
+  console.log(`      ${c.green(`ass brief ${newestRef}`)} ${c.dim('  输出交接摘要，可直接粘贴')}`)
+  console.log(`      ${c.dim(`或在别的 agent 里说「看下 ${newestRef} 的交接摘要」`)}`)
+
+  console.log('')
+  const taskNames = tasks.map((t) => t.name)
+  console.log(c.dim('并进任务     把这段会话绑进一件事，换 agent 时一句话接上'))
+  console.log(
+    `${c.dim('            ')}${c.cyan(`ass task add ${taskNames[0] ?? '<你想要的名字>'} <引用>`)}   ` +
+      c.dim(taskNames.length ? `任务名你起；已有的：${taskNames.join('、')}` : '还没有任务，这样写就新建一个'),
+  )
+  console.log(`${c.dim('            ')}${c.dim('<引用> 就用每行末尾那个，例如 ')}${c.cyan(newestRef)}`)
+  console.log(
+    `${c.dim('找相关会话   ')}${c.cyan('ass search <关键词>')}   ` +
+      c.dim('看哪几段其实在做同一件事 —— 判断由你下，工具不猜'),
+  )
+  const note = latestNote(repoDir)
+  console.log(c.dim(`交接记录     ass notes${note ? `                        上次收尾 ${fmtTime(note.entry.at)}` : ''}`))
   if (errors.length) {
     console.log('')
     console.log(c.yellow(`部分 agent 读取失败：${errors.join('; ')}`))
@@ -330,6 +439,310 @@ function cmdContext(args: Args, cfg: Config): void {
   console.log(c.dim('勾掉待办：ass context --done c4    删除：ass context --remove c4    连已完成的也看：--all'))
 }
 
+// ---------------------------------------------------------------- 任务
+
+/**
+ * 操作失败：短错误 + 非零退出码。
+ * 和 usage() 的区别：usage 是「你用法写错了」，打整篇帮助；
+ * 这个只是「没办成」（任务名找不到、会话找不到），打整篇帮助会把真正的原因淹掉，
+ * 而且脚本里 `ass resume X || ...` 需要非零退出码才判得出来。
+ */
+function fail(msg: string, hint?: string): void {
+  console.log(c.yellow(msg))
+  if (hint) console.log(c.dim(hint))
+  process.exitCode = 1
+}
+
+/** 用法错误：打整篇帮助 + 非零退出码（`usage()` 本身不改退出码，这里补上） */
+function usageFail(msg: string): void {
+  process.exitCode = 1
+  usage(msg)
+}
+
+/** 一行式概览（去掉 id 前缀，列表里 id 单独上色） */
+function taskBits(t: TaskRecord): string {
+  return taskSummary(t)
+}
+
+function printTaskView(v: TaskView): void {
+  const head = [`${v.sessions} 个会话`, v.chain.join('→')]
+  if (v.status === 'done') head.push('已完成')
+  console.log(`${c.bold('任务')} ${c.cyan(v.name)}  ${c.dim(head.filter(Boolean).join(' · '))}`)
+  console.log(c.dim('─'.repeat(48)))
+
+  if (v.goal) {
+    console.log(`${c.bold('原始目标')}${v.goal.from ? c.dim(`（${v.goal.from}）`) : ''}`)
+    console.log(`  ${v.goal.text}`)
+    console.log('')
+  }
+
+  if (v.decisions.length) {
+    console.log(c.bold('决策'))
+    const multi = new Set(v.decisions.map((d) => path.basename(d.repo))).size > 1
+    for (const d of v.decisions.slice(0, 6)) {
+      const tag = d.kind === 'dead-end' ? c.dim('，已排除') : d.kind === 'constraint' ? c.dim('（约束）') : ''
+      const repoTag = multi ? c.dim(` [${path.basename(d.repo)}]`) : ''
+      console.log(`  ${c.dim('·')} ${d.text}${tag} ${c.cyan(d.id)}${repoTag}`)
+    }
+    if (v.decisions.length > 6) console.log(c.dim(`  … 其余 ${v.decisions.length - 6} 条见 ass context`))
+    console.log('')
+  }
+
+  if (v.segments.length) {
+    console.log(c.bold('各段进展'))
+    v.segments.forEach((s, i) => {
+      const bits: string[] = []
+      if (s.label) bits.push(s.label)
+      else if (s.title) bits.push(plain(s.title, 40))
+      const state = s.note || s.fallback
+      if (state) bits.push(c.dim(`— ${state}`))
+      const flags: string[] = []
+      if (s.current) flags.push(c.green('当前'))
+      if (!s.live) flags.push(c.yellow('会话已不可读'))
+      console.log(`  ${i + 1}. ${c.cyan(s.ref.padEnd(18))} ${bits.join(' ')}${flags.length ? `（${flags.join(' · ')}）` : ''}`)
+    })
+    console.log('')
+  } else {
+    console.log(c.dim(`提示：ass task add ${v.name} 把会话绑进来`))
+    console.log('')
+  }
+
+  if (v.todos.length) {
+    console.log(c.bold('待办'))
+    for (const t of v.todos.slice(0, 8)) {
+      console.log(`  ${t.done ? c.dim('☑') : '☐'} ${t.done ? c.dim(t.text) : t.text} ${c.dim(t.id)}`)
+    }
+    if (v.totalTodos > 8) console.log(c.dim(`  … 其余 ${v.totalTodos - 8} 条见 ass context`))
+    console.log('')
+  }
+
+  if (v.staleCount) {
+    console.log(c.yellow(`${v.staleCount} 段对应的会话已经读不到了（数据来自绑定时留下的快照）。`))
+    console.log(c.dim(`清理：ass task rm ${v.name} <引用>`))
+    console.log('')
+  }
+  console.log(c.dim(`继续：新 agent 里说「继续 ${v.name}」，它会自己取这份上下文；`))
+  console.log(c.dim(`      或 ass resume ${v.name} --save 存成本仓库的交接记录`))
+}
+
+function taskNamesHint(): string {
+  const all = taskList({ includeDone: true })
+  return all.length ? `（已有：${all.map((t) => t.name).join('、')}）` : '（还没有任何任务）'
+}
+
+function cmdResume(args: Args, cfg: Config): void {
+  const ref = args.positional[0]
+  let view: TaskView | null = null
+
+  if (ref) {
+    view = taskView(ref, cfg)
+    if (!view) return fail(`没找到任务：${ref}`, taskNamesHint())
+  } else {
+    // 不给任务名：本仓库正好有一个进行中的就直出，多个就让人选
+    const mine = taskList({ repo: process.cwd() })
+    if (mine.length === 1) {
+      view = taskView(mine[0]!.id, cfg)
+    } else {
+      const list = mine.length ? mine : taskList()
+      if (!list.length) return fail('还没有任何任务。', '先绑一个：ass task add <任务名>')
+      fail(mine.length ? `这个仓库有 ${mine.length} 个进行中的任务，需要指定一个。` : '这个仓库没有进行中的任务。全部任务：')
+      console.log('')
+      for (const t of list) console.log(`  ${c.cyan(t.id)} ${t.name}  ${c.dim(taskBits(t))}`)
+      console.log('')
+      console.log(c.dim(`例如：ass resume ${list[0]!.name}`))
+      return
+    }
+  }
+  if (!view) return usage(`没找到任务：${ref}`)
+
+  if (args.flags.json) {
+    console.log(JSON.stringify(view, null, 2))
+    return
+  }
+
+  const md = taskResumeMarkdown(view)
+  const out = args.flags.out as string | undefined
+  if (out) {
+    const file = path.resolve(out)
+    fs.writeFileSync(file, md)
+    console.log(c.green(`已写入 ${file}`) + c.dim(`（${md.length} 字符）`))
+    return
+  }
+  if (args.flags.md) {
+    console.log(md)
+    return
+  }
+  if (args.flags.save) {
+    const repo = view.segments.find((s) => s.repo)?.repo || view.repo
+    if (!repo) return fail('这个任务没关联任何仓库。', '先 `ass task add` 绑一个会话。')
+    const saved = saveNoteMd({ repo, md, key: `task:${view.id}`, title: view.name })
+    console.log(c.green('已存成本仓库的交接记录'))
+    console.log(`  ${c.dim('文件')}     ${saved.latestFile}`)
+    console.log(c.dim('  效果     下次任何 agent 一进这个仓库，ass / session_status 就会显示这份任务总览'))
+    return
+  }
+  printTaskView(view)
+}
+
+function cmdTask(args: Args, cfg: Config): void {
+  const sub = args.positional[0]
+  const rest = args.positional.slice(1)
+  switch (sub) {
+    case undefined:
+    case 'list':
+    case 'ls':
+      return cmdTaskList(args)
+    case 'new':
+    case 'create':
+      return cmdTaskNew(args, rest[0])
+    case 'add':
+    case 'bind':
+      return cmdTaskAdd(args, cfg, rest)
+    case 'note':
+      return cmdTaskNote(args, rest)
+    case 'rm':
+    case 'remove':
+    case 'del':
+      return cmdTaskRm(args, rest)
+    case 'done':
+      return cmdTaskDone(args, rest)
+    default:
+      return usageFail(`未知的子命令：task ${sub}`)
+  }
+}
+
+function cmdTaskList(args: Args): void {
+  const all = Boolean(args.flags.all)
+  const tasks = taskList({ repo: all ? null : process.cwd(), includeDone: all })
+  if (args.flags.json) {
+    console.log(JSON.stringify(tasks, null, 2))
+    return
+  }
+  if (!tasks.length) {
+    console.log(c.dim(all ? '还没有任何任务。' : '这个仓库还没有任务。'))
+    console.log(c.dim(`绑一个：ass task add <任务名>       看全部仓库：ass task --all`))
+    return
+  }
+  for (const t of tasks) console.log(`  ${c.cyan(t.id)} ${t.name}  ${c.dim(taskBits(t))}`)
+  console.log('')
+  console.log(c.dim(`看总览：ass resume <任务>      连已完成的也列：ass task --all`))
+}
+
+function cmdTaskNew(args: Args, name: string | undefined): void {
+  if (!name) return usageFail('用法：ass task new <名字> [--goal "原始目标"]')
+  const goal = typeof args.flags.goal === 'string' ? args.flags.goal : undefined
+  const repo = path.resolve((args.flags.repo as string) || process.cwd())
+  const r = taskCreate({ name, goal, repo })
+  if (args.flags.json) {
+    console.log(JSON.stringify(r, null, 2))
+    return
+  }
+  console.log(r.created ? `${c.green('已新建任务')} ${c.cyan(r.task.id)} ${c.bold(r.task.name)}` : `${c.yellow('已存在同名任务')} ${c.cyan(r.task.id)} ${r.task.name}`)
+  console.log(c.dim(`  ${taskBits(r.task)}`))
+  console.log('')
+  console.log(c.dim(`绑会话进来：ass task add ${r.task.name}`))
+}
+
+function cmdTaskAdd(args: Args, cfg: Config, rest: string[]): void {
+  const name = rest[0]
+  if (!name) return usageFail('用法：ass task add <任务名> [会话引用] [--label "需求 4-5"] [--note "卡在退款回调"]')
+  const repo = path.resolve((args.flags.repo as string) || process.cwd())
+  const ref = rest[1]
+
+  let found = ref ? findSession(ref, cfg) : null
+  if (!ref) {
+    const cur = currentSession(repo, cfg)
+    found = cur?.found ?? null
+    if (cur?.stale) console.log(c.dim('（这是本仓库最近的会话；如果不对，显式给一个引用）'))
+  }
+  if (!found) {
+    return fail(
+      ref ? `没找到会话：${ref}` : '这个仓库还没有会话记录。',
+      ref ? undefined : `等第一条消息落盘后再试，或显式给引用：ass task add ${name} <引用>`,
+    )
+  }
+
+  const str1 = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
+  const r = taskAttach({
+    task: name,
+    meta: found.meta,
+    label: str1(args.flags.label),
+    note: str1(args.flags.note),
+    goal: str1(args.flags.goal),
+    repo,
+  })
+
+  if (args.flags.json) {
+    console.log(JSON.stringify(r, null, 2))
+    return
+  }
+  if (r.created) console.log(`${c.green('已新建任务')} ${c.cyan(r.task.id)} ${c.bold(r.task.name)}`)
+  console.log(
+    r.added
+      ? `${c.green('已绑定')} ${c.cyan(found.meta.key)} ${c.dim(`（第 ${r.index + 1} 段）`)}`
+      : `${c.green('已更新')} 这个会话已经在任务里 ${c.dim(`（第 ${r.index + 1} 段）`)}`,
+  )
+  console.log(c.dim(`  ${found.meta.agentLabel} · ${plain(found.meta.title, 50)}`))
+  console.log('')
+  console.log(c.dim(`看总览：ass resume ${r.task.name}`))
+}
+
+function cmdTaskNote(args: Args, rest: string[]): void {
+  const name = rest[0]
+  const note = typeof args.flags.note === 'string' ? args.flags.note : undefined
+  if (!name || !note) return usageFail('用法：ass task note <任务名> [会话引用] --note "卡在退款回调"')
+  const r = taskSetNote(name, rest[1] ?? null, note)
+  if (!r) return fail(`没找到任务或那一段：${name}`, taskNamesHint())
+  if (args.flags.json) {
+    console.log(JSON.stringify(r, null, 2))
+    return
+  }
+  console.log(`${c.green('已更新进展')} ${c.cyan(r.id)} ${r.name}  ${c.dim(note)}`)
+}
+
+function cmdTaskRm(args: Args, rest: string[]): void {
+  const name = rest[0]
+  const which = rest[1]
+  if (!name) return usageFail('用法：ass task rm <任务名> [会话引用]    （不给引用 = 删掉整个任务）')
+
+  // 破坏性操作只认完整名字或 tN —— 不做模糊匹配
+  const t = findTask(name, { fuzzy: false })
+  if (!t) return fail(`没找到任务：${name}`, `${taskNamesHint()}删除只认完整名字或 tN（不支持模糊匹配）`)
+
+  if (!which) {
+    const gone = taskRemove(t.id)
+    if (!gone) return fail(`删除失败：${name}`)
+    if (args.flags.json) {
+      console.log(JSON.stringify(gone, null, 2))
+      return
+    }
+    console.log(`${c.yellow('已删除任务')} ${c.cyan(gone.id)} ${gone.name} ${c.dim(`（${gone.sessions.length} 段）`)}`)
+    return
+  }
+
+  const out = taskDetach(t.id, which)
+  if (!out?.removed) return fail(`任务「${t.name}」里没有这一段：${which}`)
+  if (args.flags.json) {
+    console.log(JSON.stringify(out, null, 2))
+    return
+  }
+  console.log(`${c.yellow('已解绑')} ${c.cyan(out.removed.key)} ${c.dim(`（${t.name} 还剩 ${out.task.sessions.length} 段）`)}`)
+}
+
+function cmdTaskDone(args: Args, rest: string[]): void {
+  const name = rest[0]
+  if (!name) return usageFail('用法：ass task done <任务名>    （再执行一次 = 重新打开）')
+  const t = findTask(name, { fuzzy: false })
+  if (!t) return fail(`没找到任务：${name}`, `${taskNamesHint()}这个操作只认完整名字或 tN`)
+  const r = taskSetStatus(t.id, t.status === 'done' ? 'active' : 'done')
+  if (!r) return fail(`操作失败：${name}`)
+  if (args.flags.json) {
+    console.log(JSON.stringify(r, null, 2))
+    return
+  }
+  console.log(`${c.green(r.status === 'done' ? '已标记完成' : '已重新打开')} ${c.cyan(r.id)} ${r.name}`)
+}
+
 function cmdSearch(args: Args, cfg: Config): void {
   const q = args.positional.join(' ')
   if (!q) return usage('search 需要一个关键词：`ass search "点击穿透"`')
@@ -475,9 +888,15 @@ function cmdInstall(args: Args): void {
   const steps = installAll({ dryRun: Boolean(args.flags['dry-run']) })
   printSteps(`${args.flags['dry-run'] ? '[dry-run] ' : ''}agent-session-sync install`, steps)
   console.log('')
-  console.log(c.dim('已接入 MCP 的 agent，重启后即可在会话里调用 session_* 工具；'))
-  console.log(c.dim('规则块已写进全局 CLAUDE.md / AGENTS.md，新会话开场会主动问你「要不要同步之前的会话」。'))
-  console.log(c.dim('Cursor / Trae 这类需要手工贴的地方：ass rules'))
+  console.log(c.dim('MCP 已写进上面所有已安装的 agent（含 Cursor / Kiro），重启对应 agent 就能调用 session_* 工具。'))
+  console.log('')
+  console.log(
+    c.bold('规则块') +
+      c.dim('（开场该主动做什么的约定）只自动写进了 claude / codex / opencode。另外两个得手工：'),
+  )
+  console.log(`  ${c.cyan('Cursor')}   ${c.dim('Settings → Rules 里贴下面那条命令的输出；或在这个项目里跑 ass init（写 .cursor/rules/）')}`)
+  console.log(`  ${c.cyan('Trae')}     ${c.dim('贴到它的规则设置里')}`)
+  console.log(`  ${c.dim('原文：')}${c.green('ass rules')}`)
 }
 
 function cmdUninstall(args: Args): void {
@@ -485,6 +904,44 @@ function cmdUninstall(args: Args): void {
   printSteps(`${args.flags['dry-run'] ? '[dry-run] ' : ''}agent-session-sync uninstall`, steps)
   console.log('')
   console.log(c.dim('会话数据（缓存 / 附件 / 交接记录）没有被删除，需要的用 ass notes 找回。'))
+}
+
+/**
+ * MCP 配置本身——和 `ass rules`（规则原文）对称：
+ * 不带参数就把配置内容打出来，给 Trae 这类只能手工贴的 agent 用；
+ * `--write` 则直接在**当前工程**里创建，解决 Cursor 这种没有用户级全局 MCP 文件、
+ * 而 `ass install` 又按设计不创建 agent 配置目录的情况。
+ */
+function cmdMcp(args: Args): void {
+  if (args.flags.write) {
+    const dir = path.resolve(args.positional[0] || process.cwd())
+    const dry = Boolean(args.flags['dry-run'])
+    const only = typeof args.flags.agent === 'string' ? args.flags.agent : undefined
+    const steps = args.flags.undo
+      ? uninstallProjectMcp(dir, { dryRun: dry })
+      : installProjectMcp(dir, { dryRun: dry, only })
+    printSteps(`${dry ? '[dry-run] ' : ''}项目级 MCP 配置 → ${dir}`, steps)
+    if (!dry) {
+      console.log('')
+      console.log(c.dim('重启该 agent（或重新打开这个项目）后生效。不想要了：ass mcp --write --undo'))
+    }
+    return
+  }
+
+  console.log(c.bold('MCP 配置内容') + c.dim('   （能自动写的 agent 直接看下面第二条命令）'))
+  console.log('')
+  console.log(mcpConfigJson())
+  console.log('')
+  console.log(c.bold('放到哪里'))
+  for (const t of PROJECT_MCP_TARGETS) {
+    console.log(`  ${c.cyan(t.label.padEnd(12))} ${t.rel}   ${c.dim('（项目里，打开这个项目就生效）')}`)
+  }
+  console.log(`  ${c.cyan('Trae 等'.padEnd(11))} ${c.dim('在 IDE 的 MCP 设置里手工添加，内容就是上面那段 JSON')}`)
+  console.log('')
+  console.log(c.dim('自动创建   ass mcp --write                在当前工程写上面那些文件'))
+  console.log(c.dim('           ass mcp --write --dry-run      只看不改'))
+  console.log(c.dim('           ass mcp --write --undo         撤销（只摘我们那一项）'))
+  console.log(c.dim('用户级     ass install                     Claude Code / Codex / OpenCode / Kiro'))
 }
 
 function cmdInit(args: Args): void {
@@ -524,9 +981,23 @@ ${c.bold('搬上下文')}
                           勾掉待办 --done c4，删除 --remove c4，连已完成一起看 --all
   ass notes                已保存的交接记录列表
 
+${c.bold('任务')}（把跨 agent 的多段会话绑成一件事）
+  ass resume [任务]        任务总览：原始目标 / 决策 / 各段进展 / 待办
+                          --save 存成本仓库的交接记录，--md 输出 Markdown，--out 文件.md，--json
+  ass task                 列出本仓库的任务（--all 跨仓库且含已完成）
+  ass task new <名字>      新建任务（--goal "原始目标"）
+  ass task add <任务> [引用]  把会话绑进来（--label "需求 4-5"，--note "卡在退款回调"）
+                          不给引用 = 本仓库最近的会话
+  ass task note <任务> [引用] --note "…"     更新某一段的进展
+  ass task rm <任务> [引用]  解绑一段；不给引用 = 删掉整个任务（只认完整名字 / tN）
+  ass task done <任务>     标记完成（再执行一次 = 重新打开）
+
 ${c.bold('接入 / 维护')}
   ass install              把 MCP + 规则写进本机各 agent（--dry-run 只看不改）
   ass rules                打印规则原文（Cursor/Trae 这些要手工贴的用）
+  ass mcp                  打印 MCP 配置内容 + 该放到哪；--write 在当前工程自动创建
+                           （Cursor 这类没有用户级全局 MCP 文件的，只能走项目级）
+                           --write --dry-run 只看不改，--write --undo 撤销
   ass uninstall            摘掉 MCP + 规则（不动你的会话数据）
   ass init [目录]          项目级注入规则（--dry-run / --undo）
   ass agents               探测到哪些 agent、数据源在哪、MCP 是否已接入
@@ -536,9 +1007,10 @@ ${c.bold('接入 / 维护')}
   ass doctor               自检
 
 ${c.bold('引用')}
-  #1                      上一次 list 的第 1 条
+  #1                      上一次 list 的第 1 条（注意：跨进程不稳，任务里请用下面两种）
   claude:31c5af10         agent:会话id 前缀
   点击穿透                 标题里包含这段文字
+  t3 / 支付重构            任务（ass task / ass resume 用）
 `)
 }
 
@@ -571,6 +1043,11 @@ function main(): void {
     case 'context':
     case 'ctx':
       return cmdContext(args, cfg)
+    case 'resume':
+      return cmdResume(args, cfg)
+    case 'task':
+    case 'tasks':
+      return cmdTask(args, cfg)
     case 'search':
       return cmdSearch(args, cfg)
     case 'agents':
@@ -586,6 +1063,8 @@ function main(): void {
     case 'rules':
       console.log(rulesBlock())
       return
+    case 'mcp':
+      return cmdMcp(args)
     case 'uninstall':
       return cmdUninstall(args)
     case 'init':

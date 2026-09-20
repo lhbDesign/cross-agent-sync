@@ -22,6 +22,7 @@ export {
   CACHE_DIR,
   HANDOFF_DIR,
   ATTACH_DIR,
+  TASK_DIR,
   configPath,
   ensureConfig,
   expandPath,
@@ -51,7 +52,8 @@ export { saveImages, toDataUrl } from './core/attach'
 
 export { buildBrief, buildSummary, extractDecisions, extractNextSteps, pickFiles } from './core/brief'
 export type { BriefOptions } from './core/brief'
-export { latestNote, listNotes, saveNote } from './core/handoff'
+export { latestNote, listNotes, saveNote, saveNoteMd } from './core/handoff'
+export type { SaveNoteMdInput } from './core/handoff'
 export {
   addContext,
   contextFile,
@@ -64,6 +66,40 @@ export {
   updateContext,
 } from './core/context'
 export type { ContextEntry, ContextKind, ContextStats, RepoContext } from './core/context'
+export {
+  currentSession,
+  findTask,
+  normalizeName,
+  readTasks,
+  taskAttach,
+  taskChain,
+  taskCreate,
+  taskDetach,
+  taskLine,
+  taskList,
+  taskMatchesRepo,
+  taskRemove,
+  taskResumeMarkdown,
+  taskSetNote,
+  taskSetStatus,
+  taskSummary,
+  taskView,
+  writeTasks,
+  TASK_FILE,
+  TASK_VERSION,
+} from './core/task'
+export type {
+  FindTaskOptions,
+  TaskAttachInput,
+  TaskAttachResult,
+  TaskDecision,
+  TaskFile,
+  TaskRecord,
+  TaskSegment,
+  TaskSession,
+  TaskStatus,
+  TaskView,
+} from './core/task'
 export type { NoteEntry, SavedNote } from './core/handoff'
 export { formatSearchResult, searchSessions } from './core/search'
 export type { SearchHit, SearchResult } from './core/search'
@@ -77,10 +113,14 @@ export {
   doctor,
   initProject,
   installAll,
+  installProjectMcp,
+  mcpConfigJson,
   mcpEntry,
   mcpScript,
+  PROJECT_MCP_TARGETS,
   rulesBlock,
   uninstallAll,
+  uninstallProjectMcp,
 } from './install'
 
-export { cleanUserText, gitRoot, isInjected, parseDataUrl, plain, projectName, sameRepo } from './util'
+export { cleanUserText, dispWidth, gitRoot, isInjected, parseDataUrl, plain, projectName, sameRepo, truncWidth } from './util'

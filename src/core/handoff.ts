@@ -40,24 +40,55 @@ export interface SavedNote {
   md: string
 }
 
-/** 保存一份收尾记录（同时更新 latest.md 和 index.json） */
-export function saveNote(meta: SessionMeta, turns: Turn[], summary?: string, repoDir?: string): SavedNote {
-  const repo = meta.repo || repoDir || meta.cwd || 'unknown'
-  const slug = repoSlugOf(meta, repo)
+export interface SaveNoteMdInput {
+  /** 用来算 slug、并记进 index 的仓库目录 */
+  repo: string
+  md: string
+  /** 这份记录是谁写的，如 `claude:31c5af10` 或 `task:t1` */
+  key?: string
+  /** 优先用它算 slug（等价于会话的 meta.project） */
+  project?: string | null
+  /** 文件名里的标题片段 */
+  title?: string
+}
+
+/**
+ * 保存一份**任意 Markdown** 成本仓库的收尾记录。
+ * 抽取出来是为了让「任务总览」（`ass resume <任务> --save`）也能走同一条路径。
+ */
+export function saveNoteMd(input: SaveNoteMdInput): SavedNote {
+  const proj = input.project || path.basename(input.repo.replace(/\/+$/, '')) || ''
+  const slug = slugify(proj || 'unknown', 60)
   const dir = path.join(HANDOFF_DIR, slug)
   fs.mkdirSync(dir, { recursive: true })
 
-  const md = (summary ? `> **补充说明：** ${summary}\n\n` : '') + buildBrief(meta, turns)
+  const md = input.md
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
-  const file = path.join(dir, `${stamp}-${slugify(meta.title, 30)}.md`)
+  const file = path.join(dir, `${stamp}-${slugify(String(input.title ?? ''), 30)}.md`)
   fs.writeFileSync(file, md)
   const latestFile = path.join(dir, 'latest.md')
-  fs.writeFileSync(latestFile, `<!-- agent-session-sync:latest repo=${meta.project ?? ''} key=${meta.key} at=${new Date().toISOString()} -->\n${md}`)
+  fs.writeFileSync(
+    latestFile,
+    `<!-- agent-session-sync:latest repo=${proj} key=${input.key ?? ''} at=${new Date().toISOString()} -->\n${md}`,
+  )
 
   const idx = loadIndex()
-  idx[slug] = { latest: path.relative(HANDOFF_DIR, latestFile), key: meta.key, at: Date.now(), repo, project: meta.project ?? slug }
+  idx[slug] = {
+    latest: path.relative(HANDOFF_DIR, latestFile),
+    key: input.key ?? '',
+    at: Date.now(),
+    repo: input.repo,
+    project: input.project ?? (proj || slug),
+  }
   writeJsonFile(INDEX_FILE, idx)
   return { file, latestFile, slug, md }
+}
+
+/** 保存一份收尾记录（同时更新 latest.md 和 index.json） */
+export function saveNote(meta: SessionMeta, turns: Turn[], summary?: string, repoDir?: string): SavedNote {
+  const repo = meta.repo || repoDir || meta.cwd || 'unknown'
+  const md = (summary ? `> **补充说明：** ${summary}\n\n` : '') + buildBrief(meta, turns)
+  return saveNoteMd({ repo, md, key: meta.key, project: meta.project, title: meta.title })
 }
 
 export interface LatestNote {

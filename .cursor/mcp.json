@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "agent-session-sync": {
+      "command": "/Users/lihaibo/.nvm/versions/node/v22.11.0/bin/node",
+      "args": [
+        "/Users/lihaibo/Desktop/work/session-mcp/dist/mcp.js"
+      ]
+    }
+  }
+}

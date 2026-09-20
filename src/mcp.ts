@@ -9,10 +9,21 @@ import { latestNote, listNotes, saveNote } from './core/handoff'
 import { addContext, contextMarkdown, readContext, updateContext } from './core/context'
 import { formatSearchResult, searchSessions } from './core/search'
 import { findSession, listSessions, readSession } from './core/store'
+import {
+  currentSession,
+  findTask,
+  taskAttach,
+  taskDetach,
+  taskLine,
+  taskList,
+  taskResumeMarkdown,
+  taskSetStatus,
+  taskView,
+} from './core/task'
 import { saveImages } from './core/attach'
 import { detectSources } from './detect'
 import { maybeReexec } from './bootstrap'
-import { fmtTime, parseSince, plain, truncate } from './util'
+import { fmtTime, gitRoot, parseSince, plain, truncate } from './util'
 import type { Turn } from './types'
 import type { ContextKind } from './core/context'
 
@@ -27,23 +38,37 @@ process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
   return (origEmitWarning as (...a: unknown[]) => void)(warning, ...rest)
 }) as typeof process.emitWarning
 
-const INSTRUCTIONS = `agent-session-sync gives you read-only access to the user's conversation history in OTHER coding
+const INSTRUCTIONS = `agent-session-sync gives you access to the user's conversation history in OTHER coding
 agents (Claude Code, Codex, Cursor, OpenCode, and any agent the user configured) for the same repository.
 
 Use it when the user switches agents/models, starts a fresh chat, or says things like
 "继续 / 接着上次 / 同步历史 / 换个模型 / 之前那个会话 / handoff".
 
 Recommended flow:
-1. call session_status first — it shows any handoff note saved earlier plus recent sessions;
-2. if the user needs to pick, call session_list and show them the numbered candidates
+1. call session_status first — it shows any in-progress TASK for this repo, the context recorded earlier,
+   and recent sessions;
+1.5 if session_status lists an in-progress task — or the user says "继续 X / 接着 X 任务" — call
+   session_task_resume FIRST. Restate "目标 / 已完成 / 待办 / 下一步", wait for confirmation, then work.
+   Do NOT ask the user to re-explain work that the task already describes;
+2. if the user needs to pick a session, call session_list and show them the numbered candidates
    (agent · time · title · last request), then ask which one to import — do NOT pick for them;
 3. call session_handoff to get the compact brief, then restate "目标 / 已完成 / 待办 / 下一步" and wait for confirmation;
 4. to port a single question (with its images) into the current agent, call session_last.
 
+During work: call session_remember the moment a decision is made, a path is proven wrong, or a constraint
+is found — do not save it up until the end.
+
+Tasks: a TASK binds several sessions across agents into one piece of work ("需求 1-3 用 claude 做完，
+4-5 换 codex"). When the user starts a new piece of work, or moves to another agent to continue the same
+work, call session_task to bind the current session. Do NOT invent task boundaries on the user's behalf —
+list existing tasks first and let the user name the new one.
+
 When wrapping up (user says "记一下 / 收尾 / 保存进度 / 下次继续 / wrap up"), call session_note.
 
-Constraints: everything is READ-ONLY — never modify another agent's session files. Prefer the brief over
-the full transcript; only use session_read mode=full when the user explicitly asks for the whole history.`
+Constraints: with respect to OTHER agents' session data this is strictly READ-ONLY — never modify another
+agent's session files. session_remember and session_task write only to this tool's own store
+(~/.local/share/agent-session-sync). Prefer the brief over the full transcript; only use
+session_read mode=full when the user explicitly asks for the whole history.`
 
 interface ToolDef {
   name: string
@@ -80,8 +105,9 @@ const TOOLS: ToolDef[] = [
   {
     name: 'session_status',
     description:
-      'Show the latest saved handoff note for this repository plus the most recent sessions across all agents. ' +
-      'Call this first at the start of a new conversation when the user has not yet stated a task.',
+      'Show the in-progress tasks, the previously recorded context, the latest saved handoff note, and the most ' +
+      'recent sessions for this repository. Call this first at the start of a new conversation when the user has ' +
+      'not yet stated a task.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -99,6 +125,16 @@ const TOOLS: ToolDef[] = [
       const ctx = contextMarkdown(repo)
       if (ctx) {
         out.push(ctx)
+        out.push('')
+      }
+      // 用 git root 找任务：repo 可能是仓库的子目录，而任务记的是根目录
+      const tasks = taskList({ repo: gitRoot(repo) ?? repo })
+      if (tasks.length) {
+        out.push('## 本仓库的任务')
+        out.push('')
+        for (const t of tasks) out.push(`- ${taskLine(t)}`)
+        out.push('')
+        out.push(`任务把跨 agent 的多段会话绑成一件事。**先取上下文再动手**：\`session_task_resume(task: "${tasks[0]!.name}")\``)
         out.push('')
       }
       if (note) {
@@ -388,6 +424,124 @@ const TOOLS: ToolDef[] = [
   },
 ]
 
+TOOLS.push(
+  {
+    name: 'session_task',
+    description:
+      'Bind sessions into a named TASK — one unit of work that spans several agents and several days ' +
+      '("需求 1-3 用 claude 做完，4-5 换 codex"). Call it when the user starts a new piece of work, when they move ' +
+      'to another agent to continue the same work, or when they say "归到 X 任务 / 记到任务里 / 接着做 X". ' +
+      'With no task name it lists existing tasks; creates the task if the name is new. ' +
+      "Writes only to this tool's own store — never to any agent's session files.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'Task name (e.g. "支付重构") or id ("t3"). Omit to list tasks.' },
+        action: { type: 'string', enum: ['attach', 'list', 'unbind', 'done'], description: 'Default: attach.' },
+        session: {
+          type: 'string',
+          description: 'Session to bind; defaults to the session currently being written in this repo.',
+        },
+        label: { type: 'string', description: 'What this segment covers, e.g. "需求 4-5".' },
+        note: { type: 'string', description: 'Progress of this segment, e.g. "卡在退款回调" or "已完成".' },
+        goal: { type: 'string', description: "The original goal in the user's own words (used when creating the task)." },
+        repo: { type: 'string', description: 'Repository (defaults to the current working directory).' },
+      },
+    },
+    call(args) {
+      const repo = repoOf(args)
+      const root = gitRoot(repo) ?? repo
+      const action = typeof args.action === 'string' ? args.action : 'attach'
+      const ref = typeof args.task === 'string' ? args.task.trim() : ''
+      const sessArg = typeof args.session === 'string' ? args.session.trim() : ''
+
+      // 没给任务名 = 列任务。比直接报错有用，也是 agent 建任务前的必经一步
+      if (action === 'list' || !ref) {
+        const tasks = taskList({ repo: root })
+        if (!tasks.length) {
+          return '这个仓库还没有任务。传 `task` 建一个——**名字由用户定**，不要替他划分任务边界。'
+        }
+        return `本仓库的任务：\n\n${tasks.map((t) => `- ${taskLine(t)}`).join('\n')}\n\n取上下文：\`session_task_resume(task: "...")\``
+      }
+
+      if (action === 'unbind') {
+        const t = findTask(ref)
+        if (!t) return `没找到任务：${ref}`
+        const r = taskDetach(t.id, sessArg || null)
+        if (!r) return `任务「${t.name}」里没有这一段：${sessArg || '(整段)'}`
+        return r.removed
+          ? `已从任务 **${r.task.name}** 解绑 \`${r.removed.key}\`，还剩 ${r.task.sessions.length} 段。`
+          : `已删除任务 **${r.task.name}**。`
+      }
+
+      if (action === 'done') {
+        const t = findTask(ref)
+        if (!t) return `没找到任务：${ref}`
+        const r = taskSetStatus(t.id, 'done')
+        return r ? `已把任务 **${r.name}** 标记为完成。` : `操作失败：${ref}`
+      }
+
+      let found = sessArg ? findSession(sessArg, CFG) : null
+      let stale = false
+      if (!found) {
+        if (sessArg) return `没找到会话：${sessArg}`
+        const cur = currentSession(root, CFG)
+        if (!cur) return '这个仓库还没有会话记录，绑不了。先聊一句再试，或显式传 session。'
+        found = cur.found
+        stale = cur.stale
+      }
+
+      const r = taskAttach({
+        task: ref,
+        meta: found.meta,
+        label: typeof args.label === 'string' ? args.label : undefined,
+        note: typeof args.note === 'string' ? args.note : undefined,
+        goal: typeof args.goal === 'string' ? args.goal : undefined,
+        repo: root,
+      })
+      const segs = r.added ? `第 ${r.index + 1} 段` : `已在任务里（第 ${r.index + 1} 段），已更新说明`
+      return (
+        `${r.created ? '已新建任务，' : ''}已绑定 **${found.meta.agentLabel}** \`${found.meta.key}\` 到任务 ` +
+        `\`${r.task.id}\` **${r.task.name}**（${segs}）` +
+        (stale ? '\n\n注意：这是本仓库**最近**的会话，未必是当前这个；如果不对，请显式传 session。' : '') +
+        `\n\n取完整上下文：\`session_task_resume(task: "${r.task.name}")\``
+      )
+    },
+  },
+  {
+    name: 'session_task_resume',
+    description:
+      'Get the consolidated context of a TASK: the original goal, the decisions and dead-ends recorded along the way, ' +
+      'what each constituent session accomplished, and the open todos. Call this FIRST when the user says ' +
+      '"继续 X / 接着 X 任务 / 上次那个支付重构", or right after session_status lists an in-progress task. ' +
+      'Read it, restate 目标 / 已完成 / 待办 / 下一步, wait for confirmation, then start working.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'Task name or id. Omit to use the single in-progress task of this repo.' },
+        repo: { type: 'string', description: 'Repository (defaults to the current working directory).' },
+      },
+    },
+    call(args) {
+      const root = gitRoot(repoOf(args)) ?? repoOf(args)
+      let ref = typeof args.task === 'string' ? args.task.trim() : ''
+      if (!ref) {
+        const mine = taskList({ repo: root })
+        if (!mine.length) {
+          return '这个仓库没有进行中的任务。用 `session_task` 建一个，或 `session_task` 不带参数看全部。'
+        }
+        if (mine.length > 1) {
+          return `这个仓库有 ${mine.length} 个进行中的任务，请让用户指定一个：\n\n${mine.map((t) => `- ${taskLine(t)}`).join('\n')}`
+        }
+        ref = mine[0]!.id
+      }
+      const v = taskView(ref, CFG)
+      if (!v) return `没找到任务：${ref}。用 \`session_task\` 列出或新建。`
+      return taskResumeMarkdown(v)
+    },
+  },
+)
+
 TOOLS.push({
   name: 'session_detect',
   description:
@@ -526,8 +680,14 @@ rl.on('line', (line) => {
 })
 
 rl.on('close', () => {
-  // 客户端关掉 stdin：把队列里没跑完的请求处理完再退出（否则响应会被截断）
-  void chain.finally(() => process.exit(0))
+  // 客户端关掉 stdin：把队列里没跑完的请求处理完再退出。
+  //
+  // ⚠️ 这里**不能**用 process.exit()：stdout 接管道时是异步写，而 process.exit 不等它 flush，
+  // 会把还没写出去的响应直接截断（tools/list 这种大响应会断在半截 JSON 上，客户端解析失败）。
+  // 只设 exitCode，让 Node 把 stdout 排空后自然退出。
+  void chain.finally(() => {
+    process.exitCode = 0
+  })
 })
 
 // 握手之后再预热索引：initialize 必须马上回，不能被扫盘卡住

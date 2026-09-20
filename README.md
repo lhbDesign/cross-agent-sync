@@ -24,6 +24,8 @@
 | **生成交接摘要**（目标 / 时间线 / 文件 / 结论 / 待办） | `ass brief #1` · `session_handoff` |
 | **收尾存档**，下次任何 agent 一进来就能看到 | `ass note` · `session_note` · `session_status` |
 | **记录决策 / 踩坑 / 约束 / 待办**，置顶给下一个 agent | `ass context` · `session_remember` |
+| **把多段会话绑成一件事**（任务），换 agent 一句话接上 | `ass task` · `ass resume` · `session_task` |
+| 看任务全貌：原始目标 / 决策 / 各段进展 / 待办 | `ass resume <任务>` · `session_task_resume` |
 | 跨 agent 全文搜索 | `ass search "点击穿透"` · `session_search` |
 | 一键把 MCP + 规则接进本机各 agent | `ass install` |
 | **自检索**：扫盘找出本机所有可能的 agent | `ass detect` · `session_detect` |
@@ -36,6 +38,54 @@
 - **不动你的项目**。默认只写用户级配置（`~/.config`、`~/.local/share`），
   要往仓库里注入规则必须显式执行 `ass init`（带 `--dry-run` 和备份）。
 - **零运行时依赖**。发布出来的包只依赖 Node 内置模块。
+
+---
+
+## 两个概念：会话 vs 任务
+
+```
+任务 cross-agent-sync开发              ← 一件事
+  ├── 段1  claude:4134ec80   14 轮      ← 一次对话
+  └── 段2  codex:01a0b24d     7 轮      ← 一次对话
+```
+
+| | **会话** | **任务** |
+| --- | --- | --- |
+| 是什么 | **一次**对话 | **一件事** |
+| 边界 | 属于某个 agent，**换 agent 就断** | 跨 agent、跨天 |
+| 怎么接着做 | `claude --resume <id>`（**只能同一个 agent**） | 在新 agent 里说「继续 `<任务名>`」 |
+| 数量 | 很多 | 少，一件事一个 |
+
+**关键一点：会话是 agent 私有的。** claude 的会话躺在 claude 的 `.jsonl` 里，codex 既读不懂也接不上。
+所以「在 codex 里**续接**一条 claude 会话」是不可能的——`claude --resume` 能用，只因为那条**本来就是 claude 的**。
+
+能做的是**带着它的上下文开一条新对话**：
+
+```bash
+ass last  claude:4134ec80     # 只要它最后那一问（含图片原样搬过去）
+ass brief claude:4134ec80     # 要完整交接摘要
+```
+
+或者把它绑进任务，之后换任何 agent 一句话接上：
+
+```bash
+ass task add cross-agent-sync开发 claude:4134ec80
+# 然后在 codex / cursor 里说「继续 cross-agent-sync开发」——
+# 它会自己取到：这事的目标是什么、前面做到哪了、有哪些决策和坑
+```
+
+**两条路适用场景不同**：
+
+| 目标 agent | 怎么搬 | 为什么 |
+| --- | --- | --- |
+| 接了 MCP 的（Claude Code / Codex / OpenCode） | 说一句「看下 `claude:4134ec80` 的交接摘要」，它自己调 `session_handoff` | 零复制，上下文直接进对话 |
+| 没接 MCP 的（Cursor / Trae …） | 跑 `ass brief claude:4134ec80`，把输出粘过去 | 这些 agent 读不到 MCP 工具 |
+
+> 想让 Cursor 也走第一条路：Cursor Settings → MCP 里手工加上（`ass rules` 有现成配置），
+> 或等 `ass install` 支持自动写入 `~/.cursor/mcp.json`。
+
+> 引用写法：`claude:4134ec80`（agent:id 前缀）是**稳定**的，跟列表顺序无关。
+> `#1` 只是「上次列表的第 1 条」，每次列会话都会被重写，**别在任务或脚本里用**。
 
 ---
 
@@ -125,6 +175,50 @@ ass install          # 一键写 MCP 配置 + 全局规则块（先看：ass ins
 收到哪儿、`session_list` 列候选给你选、`session_handoff` 取摘要、`session_last` 搬提问。
 不想要了：`ass uninstall`（只摘 MCP 和规则，**不动**你的会话数据）。
 
+### 场景 6：一件事分几段做完，中途换 agent
+
+需求 1-3 用 claude 做完了，4-5 想换 codex —— 这两段在普通工具眼里是两条**互不相干**的会话。
+把它们绑成**一个任务**：
+
+```bash
+ass task add 支付重构 --label "需求 1-3"      # 不给引用 = 绑本仓库最近那个会话
+```
+
+换到 codex 做完 4-5，接手时也绑进同一个任务：
+
+```bash
+ass task add 支付重构 --label "需求 4-5" --note "卡在退款回调"
+```
+
+之后在任何 agent 的新会话里说一句「**继续支付重构**」，它就会先取任务全貌再动手：
+
+```bash
+ass resume 支付重构
+```
+
+```
+任务 支付重构  2 个会话 · claude→codex
+原始目标（claude:8dda036d）
+  把支付模块从回调改成 Promise
+决策
+  · 接口错误统一走 msg 字段 c4
+  · 重试放拦截器会导致 refresh 死循环，已排除 c7
+各段进展
+  1. claude:8dda036d  需求 1-3 — 已完成
+  2. codex:01a0b24d   需求 4-5 — 卡在退款回调（当前）
+待办
+  ☐ 退款回调重试幂等 c3
+```
+
+想让**没接 MCP 的 agent**（Cursor / Trae 这些）也看得到，就把它落成本仓库的交接记录：
+
+```bash
+ass resume 支付重构 --save
+```
+
+> 任务里存的引用一律是 `agent:id前缀` 这种**稳定形式**，不存 `#1`。
+> 因为 `#N` 是「上次列表的第 N 条」，每次列会话都会被重写，跨进程不可靠。
+
 ---
 
 ## 两层上下文：自动读 + 主动记
@@ -182,6 +276,23 @@ ass detect --write    # 把「可接入」的写进配置文件（本机继续 /
 - Cursor 内置了一份「尽力读取」的适配器（连它存在 `workspaceStorage/<id>/images/` 里的
   图片附件也能捞出来），读不到会告诉你原因，不会假装支持；
 - Kiro / Trae / Windsurf 这类**需要你自己配置**（见下），你告诉它数据在哪、字段怎么取，它就能用。
+
+**接 MCP**：`ass install` 只写**用户级**配置，而 Cursor 这类没有用户级全局 MCP 文件，
+所以它默认接不上。用 `ass mcp` 处理：
+
+```bash
+ass mcp                    # 打印配置内容 + 该放到哪个文件（Trae 这类手工贴的用）
+ass mcp --write            # 直接在**当前工程**创建 .cursor/mcp.json / .mcp.json
+ass mcp --write --dry-run  # 只看不改
+ass mcp --write --undo     # 撤销，只摘我们那一项（别人的 server 不动）
+```
+
+写进工程的那些文件都是 JSON，`ass mcp --write` 会**合并**而不是覆盖——
+文件里已有的别的 MCP server 不会被冲掉。这些文件通常该提交进 git，团队共享；
+不想提交就加进 `.gitignore`。
+
+> **没接 MCP 也能用**：让 agent 跑 `ass brief <引用>` 一样能拿到交接摘要。
+> 规则块里已经写明了这条兜底路径，agent 不需要自己猜。
 
 ---
 
@@ -310,8 +421,21 @@ ass context              看/记 决策·踩坑·约束·待办
                          --decision/--dead-end/--constraint/--todo "…" 记一条
                          --done c4 勾掉待办，--remove c4 删除，--all 连已完成一起看
 
+ass resume [任务]        任务总览：原始目标 / 决策 / 各段进展 / 待办
+                         --save 存成本仓库的交接记录（下次任何 agent 自动看到）
+                         --md 输出 Markdown，--out 文件.md，--json
+ass task                 列出本仓库的任务（--all 跨仓库且含已完成）
+ass task new <名字>      新建任务（--goal "原始目标"）
+ass task add <任务> [引用]  把会话绑进来（--label "需求 4-5"，--note "卡在退款回调"）
+                         不给引用 = 本仓库最近在写的那个会话
+ass task note <任务> [引用] --note "…"     更新某一段的进展
+ass task rm <任务> [引用]  解绑一段；不给引用 = 删掉整个任务（只认完整名字 / tN）
+ass task done <任务>     标记完成（再执行一次 = 重新打开）
+
 ass install              接入 MCP + 全局规则（--dry-run 只看不改）
 ass rules                打印规则原文（Cursor/Trae 要手工贴的用）
+ass mcp                  打印 MCP 配置内容 + 该放哪；--write 在当前工程自动创建
+                         （Cursor 这类没有用户级全局 MCP 文件的，只能走项目级）
 ass uninstall            摘掉 MCP + 规则（不动会话数据）
 ass init [目录]          项目级规则注入（--dry-run / --undo）
 ass detect               自检索：扫盘找出本机所有可能的 agent（--write 写入配置草案）
@@ -325,7 +449,7 @@ ass doctor               自检
 
 | 工具 | 用途 |
 | --- | --- |
-| `session_status` | 新会话开场：上次的收尾记录 + 最近会话 |
+| `session_status` | 新会话开场：进行中的任务 + 记过的上下文 + 上次收尾记录 + 最近会话 |
 | `session_list` | 列出这个仓库跨 agent 的最近会话 |
 | `session_handoff` | 生成交接摘要（推荐的导入方式） |
 | `session_read` | `summary` / `tail` / `full` 读原始对话 |
@@ -333,6 +457,8 @@ ass doctor               自检
 | `session_search` | 跨会话全文搜索 |
 | `session_note` | 保存交接摘要（收尾时用） |
 | `session_remember` | 记录决策 / 踩坑 / 约束 / 待办（**干活过程中就调**） |
+| `session_task` | 把当前会话绑进一个任务（`attach` / `list` / `unbind` / `done`） |
+| `session_task_resume` | 取任务全貌：原始目标 / 决策 / 各段进展 / 待办。**说「继续 X」时先调这个** |
 | `session_repos` | 哪些仓库有历史 |
 | `session_detect` | 扫盘找出本机所有可能的 agent |
 
@@ -342,10 +468,11 @@ ass doctor               自检
 
 | 写法 | 含义 |
 | --- | --- |
-| `#1` | 上一次 `list` 的第 1 条 |
+| `#1` | 上一次 `list` 的第 1 条（⚠️ 位置会随每次列会话被重写，**跨进程不稳定**，脚本里别用） |
 | `claude:31c5af10` | `agent:会话id前缀` |
 | `31c5af10` | id 前缀（唯一时），多个候选取最近的 |
 | `点击穿透` | 标题/最近一句需求里包含这段文字 |
+| `t3` / `支付重构` | 任务（`ass task` / `ass resume` 用）；破坏性操作只认完整名字或 `tN` |
 
 ---
 
@@ -356,9 +483,10 @@ ass doctor               自检
 ~/.local/share/agent-session-sync/
 ├── cache/index.json                          # 跨 agent 索引缓存（可安全删除）
 ├── attachments/<agent>_<id>/img-N.png        # 搬运时落盘的图片
+├── tasks/index.json                          # 任务 → 多段会话的绑定（全局，可跨仓库）
 └── handoffs/
     ├── index.json                            # 仓库 → 最新一份交接记录
-    └── <repo>/latest.md + <时间>-<标题>.md    # 每次 ass note 存一份
+    └── <repo>/latest.md + <时间>-<标题>.md    # 每次 ass note / ass resume --save 存一份
 ```
 
 `ass install` 会碰到的东西（每个文件写之前都先备份成 `<文件>.bak-<时间戳>`）：
@@ -403,7 +531,7 @@ src/cli.ts          命令行          src/mcp.ts   MCP server（规划中）
 - [x] **M4** 自检索 `ass detect`（含可接入草案）+ 项目级规则注入 `ass init --dry-run/--undo` + 自定义 agent
 - [x] **P0** 决策/踩坑通道：`session_remember` + `ass context`（置顶进交接摘要）
 - [x] **P4** 规则块重写：加上「干活过程中随手记」「收尾落状态」的纪律
-- [ ] **P1** 「任务/工作流」：把跨 agent 的多次会话绑成一个任务，`ass resume <任务>`
+- [x] **P1** 「任务/工作流」：把跨 agent 的多次会话绑成一个任务，`ass resume <任务>`
 - [ ] **P2** 退场钩子：`ass hook install`，收尾自动落 note（不靠 agent 自觉）
 - [ ] **M5** 打包发布：npm publish、CI
 - [ ] 待摸清：Trae / Windsurf / VS Code Copilot Chat 的存储结构（`ass detect` 已能找到库文件）

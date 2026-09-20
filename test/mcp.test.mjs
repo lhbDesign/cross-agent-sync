@@ -69,7 +69,12 @@ test('MCP：握手 + 工具清单 + 提示词', async () => {
   assert.equal(a.result.protocolVersion, '2025-06-18')
   assert.match(a.result.instructions, /session_status/)
   const names = b.result.tools.map((t) => t.name)
-  for (const t of ['session_status', 'session_list', 'session_handoff', 'session_read', 'session_last', 'session_search', 'session_note']) {
+  // 注：session_remember / session_detect 之前加了但没进这个清单，一并补上
+  for (const t of [
+    'session_status', 'session_list', 'session_handoff', 'session_read', 'session_last',
+    'session_search', 'session_note', 'session_remember', 'session_detect',
+    'session_task', 'session_task_resume',
+  ]) {
     assert.ok(names.includes(t), `缺少工具 ${t}`)
   }
   assert.equal(c.result.prompts[0].name, 'sync_previous_session')

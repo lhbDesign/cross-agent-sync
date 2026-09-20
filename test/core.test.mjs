@@ -142,3 +142,37 @@ test('清理注入内容：剥容器标签后仍保留真实提问', () => {
   assert.equal(api.cleanUserText(mixed), '帮我把表格改成可编辑')
   assert.equal(api.cleanUserText('<system-reminder>x</system-reminder>\n真实问题'), '真实问题')
 })
+
+test('IDE 前缀（选中的行 / 打开的文件）不能把用户那句话一起丢掉', () => {
+  // VS Code 扩展会把 IDE 上下文拼在**同一个文本块**里、排在真实提问前面。
+  // 不剥掉的话，整块会以 `<` 开头被 isInjected() 判成注入 —— 用户那句话就凭空消失了。
+  const sel =
+    '<ide_selection>The user selected the lines 4 to 4 from /a/package.json:\n跨 agent 会话同步\n\n' +
+    'This may or may not be related to the current task.</ide_selection>\n\n这行注释能不能删'
+  assert.equal(api.isInjected(sel), false, '带 IDE 前缀的真实提问必须被当成真人发言')
+  assert.equal(api.cleanUserText(sel), '这行注释能不能删')
+
+  const opened =
+    '<ide_opened_file>The user opened the file /a/README.md in the IDE. ' +
+    'This may or may not be related to the current task.</ide_opened_file>'
+  assert.equal(api.isInjected(opened), true, '整条都是 IDE 噪音 → 丢弃')
+  assert.equal(api.cleanUserText(opened + '\n继续做 P1'), '继续做 P1')
+  assert.equal(api.isInjected(opened + '\n继续做 P1'), false)
+})
+
+test('显示宽度截断：中文按 2 列算，结果永远不超过预算', () => {
+  // 按字符数截断在中文下必然超宽 —— 60 个中文字符实际占 120 列。
+  const cjk = '中文标题测试中文标题测试中文标题测试中文标题测试'
+  assert.equal(api.dispWidth(cjk), cjk.length * 2, '中文占 2 列')
+  assert.equal(api.dispWidth('abc'), 3)
+
+  for (const budget of [10, 20, 40]) {
+    const cut = api.truncWidth(cjk, budget)
+    assert.ok(api.dispWidth(cut) <= budget, `预算 ${budget} 下算出来 ${api.dispWidth(cut)} 列`)
+    assert.match(cut, /…$/, '截断了要有省略号')
+  }
+  // 装得下就原样返回，不要画蛇添足加省略号
+  assert.equal(api.truncWidth('短', 10), '短')
+  // 中英混排
+  assert.ok(api.dispWidth(api.truncWidth('abc中文def中文', 12)) <= 12)
+})

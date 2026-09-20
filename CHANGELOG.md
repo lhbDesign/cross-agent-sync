@@ -6,6 +6,24 @@
 
 ### 新增
 
+- **`ass mcp`：MCP 配置本身也能自动创建了。** 和 `ass rules`（打印规则原文）对称：
+  - `ass mcp` 打印配置内容 + 该放到哪个文件，给 Trae 这种只能手工贴的用；
+  - `ass mcp --write` 直接在**当前工程**创建 `.cursor/mcp.json` / `.mcp.json`。
+    解决的是 Cursor 这类**没有用户级全局 MCP 文件**、而 `ass install` 又按设计
+    「不创建 agent 配置目录」所以一直覆盖不到的情况。
+  - 合并而非覆盖：文件里已有的别的 MCP server 不会被冲掉；`--undo` 只摘我们那一项，
+    整个文件都只有我们时才删掉它。有 `--dry-run`，有测试。
+- **「任务」——把跨 agent 的多段会话绑成一件事**（P1，立项初衷）：
+  `ass task add <任务名>` 把会话绑进来，`ass resume <任务>` 看总览
+  （原始目标 / 决策 / 各段进展 / 待办）。MCP 侧是 `session_task` / `session_task_resume`，
+  `session_status` 会列出本仓库进行中的任务。
+  `ass resume <任务> --save` 把同一份总览写成本仓库的交接记录，没接 MCP 的 agent 也能看到。
+  - 任务存 `~/.local/share/agent-session-sync/tasks/index.json`（**全局单文件**，可跨仓库）。
+    不按仓库分目录，是因为 per-repo 只能靠 `basename` 定位，而 `~/work/api` 与 `~/personal/api`
+    会撞成同一个 slug —— 任务作为长期实体不该继承这个隐患。
+  - 段在绑定时留**快照**，源会话被删掉之后这一段仍然能显示（标记「会话已不可读」）。
+  - 删除任务时 id 记入 `retired`，**永不复用**，否则历史输出里的 `t3` 会指到新任务上。
+  - 破坏性操作（`rm` / `done`）只认完整名字或 `tN`，不做模糊匹配。
 - **决策 / 踩坑 / 约束 / 待办 通道**（`session_remember` / `ass context`）：
   agent 在干活过程中随手记下的判断，会**置顶**出现在之后每个 agent 的交接摘要里。
   这是换 agent 时最值钱、最省 token 的信息，也是唯一可信的来源。
@@ -13,8 +31,50 @@
   并明确「默认只给摘要、全文要显式要」。
 - `ass rules` 命令（之前帮助里写了但没实现）。
 
+### 修复
+
+- **`ass install` 现在会给装了但还没有配置文件的 agent 建 `mcpServers`**。
+  以前 `jsonMcpFile` 只要文件不存在就直接跳过（"不创建 agent 配置目录"），
+  后果是 **Cursor 这类默认没有配置文件的 agent 永远接不上 MCP —— 哪怕你已经装了 Cursor**。
+  判据仍然是 `isInstalled()`：本机什么都没装时依旧一个文件都不建（那条测试还在守）。
+- **IDE 前缀会让整条用户提问消失**：VS Code 扩展把「选中的行 / 打开的文件」和用户那句话拼在
+  **同一个文本块**里、排在前面，而 `cleanUserText` 只剥 `system-reminder` 那几类容器，
+  没剥 `<ide_selection>` / `<ide_opened_file>`。于是整块以 `<` 开头，被 `isInjected()` 判成注入丢弃
+  —— **连同用户真正写的那句话**。实测一个真实会话被少算了 6 轮（5 → 11）。
+  影响的不只是轮次显示：`ass last` 会搬来一条**过期**的提问，交接摘要的「原始目标 / 需求时间线」
+  会缺条目，任务派生的 goal 也可能取错。已把这两个标签加进 `cleanUserText`。
+- **MCP 响应可能被截断**：`mcp.ts` 在 stdin 关闭时调用 `process.exit(0)`，而 stdout 接管道时是
+  异步写，`process.exit` 不等它 flush —— `tools/list` 这类大响应会断在半截 JSON 上，客户端解析失败。
+  改为只设 `exitCode`，让 Node 排空后自然退出。加了两个工具之后响应变大才暴露出来。
+
 ### 变更
 
+- **`ass` 首屏重排**：只回答四个问题——有几个会话 / 有哪些任务 / 怎么合并 / 怎么恢复。
+  - 以前会把整个交接摘要顶 18 行，把真正要看的东西全埋了；现在只留一行状态，全文用 `ass notes`。
+  - 每个会话行末尾给**稳定引用**（`claude:4134ec80`），底部「怎么继续」用最近一条示范两条路：
+    同一个 agent `claude --resume <id>`、换个 agent `ass brief <引用>`。
+    以前只教前者——那恰恰**不是**这个工具存在的理由。
+  - 任务区块加了一句概念说明（任务 = 把多段会话绑成一件事）。
+  - 会话行下面补回**最新一条对话**（截断显示），标题只有一句时自动省略不重复。
+  - 会话行末尾给的是**完整 id**（`claude:31c5af10-8dc3-...`），不是 8 位前缀。
+    实测 `claude --resume 31c5af10` 不好使——`--resume` 只认完整 id；
+    而 `ass brief` / `session_handoff` 是前缀匹配，完整 id 一样能用。
+    所以**一个形式就够两用**，不必让用户在两种写法之间换算。
+  - 新增 `dispWidth` / `truncWidth`（`util.ts`）：按**终端显示宽度**截断，中文算 2 列。
+    以前按字符数截，60 个中文标题实际占 120 列，永远超宽。
+    列表还会读 `process.stdout.columns` 按终端实际宽度调整，拿不到时按 120 列保守处理。
+  - 「决策 1 · 坑 1 · 待办 1」以前光秃秃挂在状态行上，没人知道是什么；
+    现在独立成块并写明「agent 干活时随手记的判断，换 agent 时会置顶出现在交接摘要里」。
+- **规则块的「没有 MCP 工具时」兜底清单漏了 `ass brief <引用>`** —— 那恰恰是跨 agent
+  搬上下文最核心的命令（实测 Cursor 里的 agent 只能自己猜出它）。已补上并说明用法；
+  同时把清单里的 `#3` 换成稳定引用 `agent:id前缀`（`#N` 每次列会话都会被重写）。
+- **任务的「原始目标」改为优先取会话标题**，不再取「用户第一句话」。
+  人贴报错/终端输出是极常见的开场，第一句经常是一大段噪声（实测取到的是
+  `lihaibo@lihaibo session-mcp % npm publish > cross-agent-sync@0.1.0 prepublishOnly > …`），
+  当成目标毫无意义。标题是 agent 自己生成的摘要，短且达意。
+  附带好处：标题就在 `SessionMeta` 里，`taskView` 因此**完全不读 transcript**。
+  标题会随对话推进被重新生成，所以缓存值每次都对比刷新；`--goal` 显式写的永不覆盖。
+- README 新增「会话 vs 任务」一节，讲清两者关系和跨 agent 的两条路径。
 - `extractDecisions`（从对话里猜决策/踩坑）**默认关闭**，降级为 `ass brief --guess`。
   实测两版启发式精度都不够：放宽则把整段叙述抓进来，收紧则什么都抓不到，
   而一个猜错的「决策」比没有更危险。摘要默认只放可信内容。

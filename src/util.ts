@@ -193,6 +193,32 @@ export function slugify(s: string, max = 40): string {
   return (t || 'untitled').slice(0, max)
 }
 
+/**
+ * 终端显示宽度：CJK / 全角字符占 2 列。
+ * 按**字符数**截断在中文下永远算不准 —— 60 个中文字符实际要占 120 列。
+ */
+const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹯＀-｠￠-￦]/
+export function dispWidth(s: string): number {
+  let n = 0
+  for (const ch of s) n += WIDE.test(ch) ? 2 : 1
+  return n
+}
+
+/** 按显示宽度截断，超了补省略号（保证结果不超过 max 列） */
+export function truncWidth(s: string, max: number): string {
+  if (max <= 1) return ''
+  if (dispWidth(s) <= max) return s
+  let out = ''
+  let n = 0
+  for (const ch of s) {
+    const w = dispWidth(ch)
+    if (n + w > max - 1) break
+    out += ch
+    n += w
+  }
+  return `${out}…`
+}
+
 export function truncate(s: string, n: number): string {
   const t = String(s ?? '')
   return t.length > n ? `${t.slice(0, n - 1)}…` : t
@@ -230,6 +256,10 @@ export function cleanUserText(text: string): string {
   t = t.replace(/<command-message>[\s\S]*?<\/command-message>/g, '')
   t = t.replace(/<command-args>[\s\S]*?<\/command-args>/g, '')
   t = t.replace(/<environment_context>[\s\S]*?<\/environment_context>/g, '')
+  // IDE 附带的前缀（选了哪几行、刚打开了哪个文件）。它们和用户那句话**在同一个文本块里**，
+  // 不剥掉的话整块会被 isInjected() 判成注入丢掉 —— 连用户真正写的那句话一起丢。
+  t = t.replace(/<ide_selection>[\s\S]*?<\/ide_selection>/g, '')
+  t = t.replace(/<ide_opened_file>[\s\S]*?<\/ide_opened_file>/g, '')
   t = t.replace(/^#+\s*AGENTS\.md\s+instructions[\s\S]*?<\/INSTRUCTIONS>/i, '')
   // 图片/附件在文本里留下的占位符（真图已经按 base64 单独解析出来了）
   t = t.replace(/<image>\s*<\/image>/gi, '')
