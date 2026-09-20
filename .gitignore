@@ -2,3 +2,8 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# 本机 MCP 配置：内容是绝对路径（node 位置 + dist/mcp.js），换台机器就是坏的
+# 项目级配置用 `ass mcp --write` 生成，各自跑一次即可，不要提交
+.mcp.json
+.cursor/mcp.json
