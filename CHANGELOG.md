@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-09-22
+
 ### 修复
 
 - **`ass --limit` 写了但没给值时，静默变成「只要 1 条」**。`ass --limit --all` 这种写法里，
@@ -192,7 +194,8 @@
 - Gemini CLI 的会话记录里没有仓库路径，只能通过 `ass list --all` 看到，无法按仓库过滤。
 - Trae / Windsurf / VS Code Copilot Chat 的存储结构还没摸清，`ass detect` 能找到库文件但不解析。
 
-[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lhbDesign/cross-agent-sync/releases/tag/v0.1.0
