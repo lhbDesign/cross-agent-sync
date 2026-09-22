@@ -44,7 +44,7 @@ import {
   uninstallProjectMcp,
 } from './install'
 import { applyDetected, detectSources } from './detect'
-import { dispWidth, fmtTime, plain, truncWidth } from './util'
+import { dispWidth, fmtTime, pkgVersion, plain, truncWidth } from './util'
 import { maybeReexec } from './bootstrap'
 
 const TTY = process.stdout.isTTY === true
@@ -1085,7 +1085,7 @@ function main(): void {
   const argv = process.argv.slice(2)
   if (argv.includes('--help') || argv.includes('-h') || argv[0] === 'help') return usage()
   if (argv.includes('--version') || argv.includes('-v')) {
-    console.log('agent-session-sync 0.1.0')
+    console.log(`agent-session-sync ${pkgVersion()}`)
     return
   }
   const args = parseArgs(argv)

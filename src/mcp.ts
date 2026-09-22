@@ -26,11 +26,12 @@ import {
 import { saveImages } from './core/attach'
 import { detectSources } from './detect'
 import { maybeReexec } from './bootstrap'
-import { fmtTime, gitRoot, parseSince, plain, truncate } from './util'
+import { fmtTime, gitRoot, parseSince, pkgVersion, plain, truncate } from './util'
 import type { Turn } from './types'
 import type { ContextKind } from './core/context'
 
-const VERSION = '0.1.0'
+// 从 package.json 读，别硬编码 —— 硬编码的那份必然会和发布版本漂开
+const VERSION = pkgVersion()
 const PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
 
 // node:sqlite 的 ExperimentalWarning 会污染 stderr，先关掉

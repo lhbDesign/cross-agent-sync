@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { openSource } from './core/roguard'
 
 /** 用户主目录；可用 ASS_HOME 覆盖（测试 / 沙箱 / 想把数据放在别处时） */
@@ -241,6 +242,25 @@ export function parseSince(v: unknown): number | null {
   }
   const t = Date.parse(String(v))
   return Number.isNaN(t) ? null : t
+}
+
+/**
+ * 从 package.json 读版本号。
+ *
+ * 别再用硬编码常量 —— 之前 `cli.ts` 和 `mcp.ts` 各写了一份 `'0.1.0'`，
+ * 发 0.2.0 时只改了 package.json，于是 `ass --version` 和 MCP 的 serverInfo
+ * 都还报 0.1.0（用户报 bug 时会报错版本）。两处手写常量必然会漂，读文件不会。
+ *
+ * 打包后 `dist/cli.js` 与 package.json 是 `../` 的关系，所以能在运行时读到。
+ */
+export function pkgVersion(): string {
+  try {
+    const p = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json')
+    const v = JSON.parse(fs.readFileSync(p, 'utf8')).version
+    return typeof v === 'string' && v ? v : '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
 }
 
 export function errMsg(e: unknown): string {
