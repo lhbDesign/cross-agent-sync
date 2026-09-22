@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-09-22
+
+### 修复
+
+- **`ass --version` 报的是上一个版本号**。`cli.ts` 和 `mcp.ts` 各硬编码了一份 `'0.1.0'`，
+  发 0.2.0 时只改了 `package.json`，于是命令行的 `--version` 和 MCP 的
+  `serverInfo.version` 都还报 0.1.0 —— 用户报 bug 时会报错版本。
+  改为运行时从 `package.json` 读（打包后是 `../` 的关系，读得到），
+  读不到退回 `0.0.0`。两处手写常量彻底消失，以后不会再漂。
+
 ## [0.2.0] — 2026-09-22
 
 ### 新增
@@ -164,6 +174,7 @@
 - Gemini CLI 的会话记录里没有仓库路径，只能通过 `ass list --all` 看到，无法按仓库过滤。
 - Trae / Windsurf / VS Code Copilot Chat 的存储结构还没摸清，`ass detect` 能找到库文件但不解析。
 
-[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lhbDesign/cross-agent-sync/releases/tag/v0.1.0
