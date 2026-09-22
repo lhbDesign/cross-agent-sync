@@ -43,3 +43,32 @@ test('cli: agents 只列出本机真正有的数据源', () => {
 test('cli: --help 有用法', () => {
   assert.match(run('--help'), /agent-session-sync/)
 })
+
+test('cli: 会话数到上限时给出提示，没到就不给', () => {
+  // 自己造一个小仓库、用 --limit 2 触发截断 —— 比造 16 个会话快得多，测的是同一段逻辑
+  const t2 = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ass-lim-')))
+  const proj = path.join(t2, 'claude-projects', '-tmp-x')
+  fs.mkdirSync(proj, { recursive: true })
+  for (const id of ['a1', 'a2', 'a3']) {
+    fs.writeFileSync(
+      path.join(proj, `${id}.jsonl`),
+      JSON.stringify({ type: 'user', cwd: t2, timestamp: '2026-09-03T10:00:00.000Z', origin: { kind: 'human' }, message: { content: [{ type: 'text', text: `会话 ${id}` }] } }) + '\n',
+    )
+  }
+  const e2 = { ...env, ASS_CLAUDE_DIR: path.join(t2, 'claude-projects'), ASS_DATA_DIR: path.join(t2, 'data') }
+  const r2 = (...args) => execFileSync(process.execPath, ['dist/cli.js', ...args], { env: e2, encoding: 'utf8' })
+
+  // ① 被截断 → 底部给提示，而且要给出可直接复制的命令，不能只说「有更多」
+  const capped = r2('status', '--repo', t2, '--limit', '2')
+  assert.match(capped, /只显示了最近 2 个会话/)
+  assert.match(capped, /ass --limit 60/, '要给出可复制的命令')
+  assert.match(capped, /--all/, '也要提示跨仓库的那个开关')
+
+  // ② 没到上限 → 不该出现这行（否则每次都在喊狼来了）
+  const roomy = r2('status', '--repo', t2, '--limit', '10')
+  assert.doesNotMatch(roomy, /只显示了最近/, '没到上限就不该有这行')
+
+  // ③ ass list 行为一致
+  assert.match(r2('list', '--repo', t2, '--limit', '2'), /只显示了最近 2 个/)
+  assert.doesNotMatch(r2('list', '--repo', t2, '--limit', '10'), /只显示了最近/)
+})

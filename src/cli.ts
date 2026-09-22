@@ -148,7 +148,11 @@ function printTurns(turns: Turn[]): void {
 function cmdStatus(args: Args, cfg: Config): void {
   const repo = (args.flags.repo as string) || process.cwd()
   const limit = Number(args.flags.limit || cfg.defaultLimit || 15)
-  const { sessions, errors, adapters } = listSessions({ repo, limit }, cfg)
+  // 多要一条：拿到 limit+1 条就说明「还有更多」。只看返回数组的话，
+  // 它已经被截断过，无从判断到底是刚好 limit 个还是被砍过。
+  const { sessions: raw, errors, adapters } = listSessions({ repo, limit: limit + 1 }, cfg)
+  const truncated = raw.length > limit
+  const sessions = truncated ? raw.slice(0, limit) : raw
   const repoDir = sessions[0]?.repo || repo
 
   console.log(c.bold(`仓库 ${repoDir}`))
@@ -255,6 +259,15 @@ function cmdStatus(args: Args, cfg: Config): void {
   )
   const note = latestNote(repoDir)
   console.log(c.dim(`交接记录     ass notes${note ? `                        上次收尾 ${fmtTime(note.entry.at)}` : ''}`))
+  if (truncated) {
+    console.log(
+      c.dim('显示上限     ') +
+        c.yellow(`只显示了最近 ${limit} 个会话（还有更多）`) +
+        c.dim(`   看更多：`) +
+        c.cyan(`ass --limit ${Math.max(limit * 4, 60)}`) +
+        c.dim('   跨仓库：加 --all'),
+    )
+  }
   if (errors.length) {
     console.log('')
     console.log(c.yellow(`部分 agent 读取失败：${errors.join('; ')}`))
@@ -264,21 +277,31 @@ function cmdStatus(args: Args, cfg: Config): void {
 function cmdList(args: Args, cfg: Config): void {
   const limit = Number(args.flags.limit || cfg.defaultLimit || 15)
   const repo = (args.flags.repo as string) || (args.flags.all ? null : process.cwd())
-  const { sessions, errors } = listSessions(
+  const { sessions: raw, errors } = listSessions(
     {
       repo,
       includeAll: Boolean(args.flags.all),
-      limit,
+      limit: limit + 1, // 多要一条，用来判断有没有被截断
       agent: (args.flags.agent as string) || undefined,
       noCache: Boolean(args.flags['no-cache']),
     },
     cfg,
   )
+  const truncated = raw.length > limit
+  const sessions = truncated ? raw.slice(0, limit) : raw
   if (args.flags.json) {
     console.log(JSON.stringify(sessions, null, 2))
     return
   }
   printList(sessions, { showRepo: !repo || Boolean(args.flags.all) })
+  if (truncated) {
+    console.log(
+      c.dim('只显示了最近 ') +
+        c.yellow(String(limit)) +
+        c.dim(` 个（还有更多）   看更多：`) +
+        c.cyan(`ass list --limit ${Math.max(limit * 4, 60)}`),
+    )
+  }
   if (errors.length) console.log(c.yellow(`\n读取失败：${errors.join('; ')}`))
 }
 
