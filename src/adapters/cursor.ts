@@ -51,13 +51,49 @@ function available(): boolean {
   }
 }
 
-/** workspaceId → 仓库路径（workspaceStorage/<id>/workspace.json 里的 folder） */
-function workspacePath(workspaceId: string): string | null {
-  const f = path.join(WS_DIR, workspaceId, 'workspace.json')
-  const j = readJsonFile<Record<string, string>>(f, {})
+/** displayPath 形如 `~/Desktop/work/x`（也可能是绝对路径） */
+function expandTilde(p: string): string {
+  return p.startsWith('~/') ? path.join(HOME, p.slice(2)) : p
+}
+
+/**
+ * workspaceId → 仓库路径。两个来源，缺一不可：
+ *   ① `workspaceStorage/<id>/workspace.json` 的 folder —— 首选，最准；
+ *   ② `state.vscdb` 里 `workspaceMetadata.entries` 的 displayPath —— 回退。
+ *
+ * 为什么必须有 ②：实测本机 63 条非空 Cursor 会话里，有 5 条的
+ * `workspaceStorage/<id>/` 下**根本没有 workspace.json**（目录被清理、或会话来自旧版本）。
+ * 只走 ① 的话这些会话 cwd/repo 全是 null，而 `listSessions` 按仓库过滤是
+ * `sameRepo(s.repo, 目标) || sameRepo(s.cwd, 目标)` —— 两个都 null，
+ * **永远匹配不上任何仓库**，于是在项目里彻底看不见，哪怕它就是在那个项目里聊的。
+ */
+function workspacePath(workspaceId: string, fallback: Map<string, string>): string | null {
+  if (!workspaceId) return null
+  const j = readJsonFile<Record<string, string>>(path.join(WS_DIR, workspaceId, 'workspace.json'), {})
   const raw = j.folder || j.workspace
-  if (!raw) return null
-  return String(raw).replace(/^file:\/\//, '')
+  if (raw) return String(raw).replace(/^file:\/\//, '')
+  return fallback.get(workspaceId) ?? null
+}
+
+/** 回退来源：state.vscdb 的 workspaceMetadata.entries。读一次，整轮 list 复用 */
+function workspacePathFallback(d: Db): Map<string, string> {
+  const out = new Map<string, string>()
+  try {
+    const rows = d.query<{ value: string }>(
+      `select value from ItemTable where key = 'workspaceMetadata.entries'`,
+    )
+    const raw = rows[0]?.value
+    if (!raw) return out
+    const parsed = JSON.parse(String(raw)) as { entries?: { workspaceId?: string; displayPath?: string }[] }
+    for (const e of parsed.entries ?? []) {
+      const wid = String(e.workspaceId ?? '')
+      const p = String(e.displayPath ?? '')
+      if (wid && p) out.set(wid, expandTilde(p))
+    }
+  } catch {
+    /* 结构对不上就当没有 —— 回退机制不该让整个 adapter 挂掉 */
+  }
+  return out
 }
 
 /**
@@ -100,6 +136,7 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
     return []
   }
   const out: SessionMeta[] = []
+  const wsFallback = workspacePathFallback(d) // 读一次，整轮复用
   for (const r of rows) {
     let head: Record<string, any> = {}
     try {
@@ -108,7 +145,7 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
       /* ignore */
     }
     if (head.isDraft) continue
-    const cwd = workspacePath(String(r.workspaceId || ''))
+    const cwd = workspacePath(String(r.workspaceId || ''), wsFallback)
     const repo = cwd ? gitRoot(cwd) : null
     const st = stats.get(String(r.composerId)) || { bubbles: 0, turns: 0 }
     out.push({
