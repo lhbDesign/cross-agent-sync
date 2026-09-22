@@ -36,23 +36,53 @@ function available(): boolean {
 function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
   const d = db()
   if (!d) return []
-  const rows = d.query<{ id: string; title: string; directory: string; worktree: string | null; model: string | null; t0: number; t1: number; turns: number }>(
+  const rows = d.query<{
+    id: string
+    title: string
+    directory: string
+    worktree: string | null
+    model: string | null
+    t0: number
+    t1: number
+    turns: number
+    lasttxt: string | null
+  }>(
+    // lasttxt = 最后一条用户消息的正文。正文在 part 表里，所以要「先定位最后一条 user
+    // message，再取它的 text part」。放在同一条 SQL 里做，避免 22+ 个会话各查一遍。
     `select s.id, s.title, s.directory, p.worktree, s.model, s.time_created as t0, s.time_updated as t1,
-            (select count(*) from message m where m.session_id = s.id and json_extract(m.data,'$.role')='user') as turns
+            (select count(*) from message m where m.session_id = s.id and json_extract(m.data,'$.role')='user') as turns,
+            (select group_concat(json_extract(pt.data,'$.text'), ' ')
+               from part pt
+              where pt.message_id = (select m2.id from message m2
+                                      where m2.session_id = s.id and json_extract(m2.data,'$.role')='user'
+                                      order by m2.time_created desc, m2.id desc limit 1)
+                and json_extract(pt.data,'$.type')='text') as lasttxt
        from session s left join project p on p.id = s.project_id
       where s.parent_id is null
       order by s.time_updated desc`,
   )
-  return rows.map((r) => {
+  // 第一遍：用「最后一条用户消息」。绝大多数会话到这里就够了
+  const cleaned = rows.map((r) => cleanUserText(String(r.lasttxt || '')))
+  const usable = cleaned.map((t) => (t && !isInjected(t) ? t : ''))
+  // 少数派：最后一条用户消息清洗后是空的、或整条都是系统注入（比如只剩一个
+  // <system-reminder>）。这时要往回找到最后一条**真的说了话**的 ——
+  // claude / codex 适配器遍历时本来就是这个行为，两边不能不一致，
+  // 否则列表里显示的和 `ass show` 读出来的对不上。
+  const needFallback = rows.filter((_, i) => !usable[i]).map((r) => r.id)
+  const fallback = needFallback.length ? lastUsableTexts(d, needFallback) : new Map<string, string>()
+
+  return rows.map((r, i) => {
     const cwd = r.directory || r.worktree || null
     const repo = cwd ? gitRoot(cwd) : null
+    const text = usable[i] || fallback.get(r.id) || ''
+    const preview = text ? plain(text, 140) : ''
     return {
       key: `opencode:${r.id}`,
       agent: 'opencode',
       agentLabel: 'OpenCode',
       id: r.id,
       title: r.title || '(空会话)',
-      preview: '',
+      preview,
       cwd,
       repo,
       project: projectName(repo || cwd),
@@ -66,6 +96,31 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
       size: 0,
     }
   })
+}
+
+/**
+ * 给「最后一条用户消息不可用」的那几个会话往回找：按时间倒序扫它的用户消息，
+ * 第一条清洗后非空且不是纯注入的，就是「用户最后真正说的那句话」。
+ *
+ * 只在少数会话上调用（见 list()），所以整表扫这几条的代价可以接受。
+ */
+function lastUsableTexts(d: Db, sessionIds: string[]): Map<string, string> {
+  const out = new Map<string, string>()
+  const ids = sessionIds.map((s) => lit(s)).join(',')
+  const rows = d.query<{ session_id: string; txt: string | null }>(
+    `select m.session_id,
+            (select group_concat(json_extract(p.data,'$.text'), ' ')
+               from part p where p.message_id = m.id and json_extract(p.data,'$.type')='text') as txt
+       from message m
+      where m.session_id in (${ids}) and json_extract(m.data,'$.role')='user'
+      order by m.session_id, m.time_created desc, m.id desc`,
+  )
+  for (const r of rows) {
+    if (out.has(r.session_id)) continue // 已是倒序，第一条可用的就是最新的
+    const t = cleanUserText(String(r.txt || ''))
+    if (t && !isInjected(t)) out.set(r.session_id, t)
+  }
+  return out
 }
 
 function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
