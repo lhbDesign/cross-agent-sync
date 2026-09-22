@@ -4,8 +4,19 @@
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-09-22
+
 ### 新增
 
+- **会话列表到上限时会明说**：`ass` / `ass list` 默认只列最近 15 个，以前超了也是**静默截断**
+  —— 你会以为「就这么多」。现在底部补一行：
+
+  ```
+  显示上限     只显示了最近 15 个会话（还有更多）   看更多：ass --limit 60   跨仓库：加 --all
+  ```
+
+  实现上要多取一条来探测：`listSessions` 返回的数组本身已经被截断过，
+  只看它无从判断到底是刚好 15 个还是被砍过。没到上限时这行不出现（否则每次都在喊狼来了）。
 - **交接预算：摘要按目标 agent 的上下文自适应裁剪**（`ass brief --budget` / `session_handoff`）。
   `buildBrief` 里原本到处是拍脑袋的硬编码截断（原始目标 600 字、时间线每条 220 字最多 40 条、
   最后一轮 4000 字…），既不随会话规模变化，也不知道下一个 agent 还剩多少上下文。
@@ -51,6 +62,13 @@
 
 ### 修复
 
+- **Cursor 会话在项目里凭空消失**：`workspaceId → 路径` 原先只查
+  `workspaceStorage/<id>/workspace.json`，而实测本机 63 条非空 Cursor 会话里
+  **有 5 条那个文件根本不存在**（目录被清理、或会话来自旧版本）。
+  这些会话 `cwd`/`repo` 全为 null，而按仓库过滤是 `sameRepo(repo) || sameRepo(cwd)`
+  —— 两个都 null 就**永远匹配不上任何仓库**，于是在它所属的项目里彻底看不见，
+  哪怕你就是在那儿聊的。现在回退到 `state.vscdb` 里 `workspaceMetadata.entries`
+  的 `displayPath`（`~` 会展开）。实测 5 条里有 4 条恢复归属。
 - **`sqlite3` 命令行漏了 `-readonly`**：它默认以**可写**方式打开数据库，遇到需要恢复的库
   会在旁边生成 `-journal`/`-wal` 甚至回写 —— 直接违背「只读聚合」的前提。
 - **「变更自证」会恒亮**：agent 会话文件在用户干活时本来就持续被追加，不做区分的话这个信号
@@ -146,5 +164,6 @@
 - Gemini CLI 的会话记录里没有仓库路径，只能通过 `ass list --all` 看到，无法按仓库过滤。
 - Trae / Windsurf / VS Code Copilot Chat 的存储结构还没摸清，`ass detect` 能找到库文件但不解析。
 
-[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lhbDesign/cross-agent-sync/releases/tag/v0.1.0
