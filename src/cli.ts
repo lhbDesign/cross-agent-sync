@@ -145,20 +145,44 @@ function printTurns(turns: Turn[]): void {
  * 首屏只回答四个问题：有几个会话 / 有哪些任务 / 怎么合并 / 怎么恢复。
  * 交接摘要**不在这里展开**（以前会顶 18 行，把真正要看的东西全埋了）——要全文用 `ass notes`。
  */
+/**
+ * 解析 `--limit`。
+ *
+ * ⚠️ 这里有个坑：`--limit` 后面如果跟的是另一个开关（比如 `ass --limit --all`），
+ * parseArgs 不会把它当值消费，`flags.limit` 会变成布尔 `true` ——
+ * 而 `Number(true) === 1`。于是「没给值」被静默解释成「只要 1 条」，
+ * 用户看到的是「1 个会话」，完全摸不着头脑。
+ * 所以这里显式区分三种情况；返回 null 表示「写了但值不合法」，调用方应当报错而不是猜。
+ */
+function limitOf(args: Args, cfg: Config): number | null {
+  const v = args.flags.limit
+  if (v === undefined) {
+    const d = Number(cfg.defaultLimit)
+    return Number.isFinite(d) && d > 0 ? Math.floor(d) : 15
+  }
+  if (typeof v !== 'string') return null // 写了 --limit 但后面没跟数字
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null
+}
+
 function cmdStatus(args: Args, cfg: Config): void {
-  const repo = (args.flags.repo as string) || process.cwd()
-  const limit = Number(args.flags.limit || cfg.defaultLimit || 15)
+  const limit = limitOf(args, cfg)
+  if (limit === null) return usageFail('--limit 需要一个正整数，例如 `ass --limit 100`')
+  // `ass --all` = 跨仓库。以前这里根本不看这个开关，而底部提示却在教用户加它 ——
+  // 说了支持就得真支持，否则提示本身就是在骗人。
+  const all = Boolean(args.flags.all)
+  const repo = (args.flags.repo as string) || (all ? null : process.cwd())
   // 多要一条：拿到 limit+1 条就说明「还有更多」。只看返回数组的话，
   // 它已经被截断过，无从判断到底是刚好 limit 个还是被砍过。
-  const { sessions: raw, errors, adapters } = listSessions({ repo, limit: limit + 1 }, cfg)
+  const { sessions: raw, errors, adapters } = listSessions({ repo, includeAll: all, limit: limit + 1 }, cfg)
   const truncated = raw.length > limit
   const sessions = truncated ? raw.slice(0, limit) : raw
-  const repoDir = sessions[0]?.repo || repo
+  const repoDir = sessions[0]?.repo || repo || process.cwd()
 
-  console.log(c.bold(`仓库 ${repoDir}`))
+  console.log(c.bold(all ? '全部仓库' : `仓库 ${repoDir}`))
 
-  const tasks = taskList({ repo: repoDir })
-  const ctxLine = contextLine(repoDir)
+  const tasks = taskList({ repo: all ? null : repoDir })
+  const ctxLine = all ? '' : contextLine(repoDir)
   const head = [`${sessions.length} 个会话`]
   if (tasks.length) head.push(`${tasks.length} 个任务`)
   console.log(c.dim(head.join(' · ')))
@@ -214,9 +238,13 @@ function cmdStatus(args: Args, cfg: Config): void {
 
   const rows = sessions.map((s, i) => {
     const l = leads[i]!
+    // 跨仓库时必须能看出每一条属于哪个项目，否则一堆同名标题分不清
+    const label = all ? `[${repoLabel(s)}]` : ''
+    const budget = label ? Math.max(12, titleMax - dispWidth(label) - 1) : titleMax
     // 按**显示宽度**截断：中文占 2 列，按字符数截在中文下必然超宽
-    const title = truncWidth(plain(s.title, 200), titleMax)
-    const head = `${l.idx} ${s.agent.padEnd(agentW)} ${l.date} ${l.turns.padEnd(4)} ${title}`
+    const t = truncWidth(plain(s.title, 200), budget)
+    const title = label ? `${t} ${c.dim(label)}` : t
+    const head = `${l.idx} ${s.agent.padEnd(agentW)} ${l.date} ${l.turns.padEnd(4)} ${t}${label ? ` ${label}` : ''}`
     const left =
       `${c.dim(l.idx)} ${c.cyan(s.agent.padEnd(agentW))} ` +
       `${c.dim(l.date)} ${c.dim(l.turns.padEnd(4))} ${title}`
@@ -257,15 +285,17 @@ function cmdStatus(args: Args, cfg: Config): void {
     `${c.dim('找相关会话   ')}${c.cyan('ass search <关键词>')}   ` +
       c.dim('看哪几段其实在做同一件事 —— 判断由你下，工具不猜'),
   )
-  const note = latestNote(repoDir)
+  // 跨仓库时「本仓库的交接记录」没有意义，不显示
+  const note = all ? null : latestNote(repoDir)
   console.log(c.dim(`交接记录     ass notes${note ? `                        上次收尾 ${fmtTime(note.entry.at)}` : ''}`))
   if (truncated) {
+    const more = Math.max(limit * 4, 60)
     console.log(
       c.dim('显示上限     ') +
         c.yellow(`只显示了最近 ${limit} 个会话（还有更多）`) +
-        c.dim(`   看更多：`) +
-        c.cyan(`ass --limit ${Math.max(limit * 4, 60)}`) +
-        c.dim('   跨仓库：加 --all'),
+        c.dim('   看更多：') +
+        c.cyan(`ass --limit ${more}`) +
+        (all ? '' : c.dim('   跨仓库：') + c.cyan(`ass --all --limit ${more}`)),
     )
   }
   if (errors.length) {
@@ -275,7 +305,8 @@ function cmdStatus(args: Args, cfg: Config): void {
 }
 
 function cmdList(args: Args, cfg: Config): void {
-  const limit = Number(args.flags.limit || cfg.defaultLimit || 15)
+  const limit = limitOf(args, cfg)
+  if (limit === null) return usageFail('--limit 需要一个正整数，例如 `ass list --limit 100`')
   const repo = (args.flags.repo as string) || (args.flags.all ? null : process.cwd())
   const { sessions: raw, errors } = listSessions(
     {

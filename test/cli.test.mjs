@@ -72,3 +72,60 @@ test('cli: 会话数到上限时给出提示，没到就不给', () => {
   assert.match(r2('list', '--repo', t2, '--limit', '2'), /只显示了最近 2 个/)
   assert.doesNotMatch(r2('list', '--repo', t2, '--limit', '10'), /只显示了最近/)
 })
+
+test('cli: --limit 写了但没给值时报错，不能静默变成「只要 1 条」', () => {
+  // parseArgs 遇到 `--limit --all` 时不会把 `--all` 当值消费，flags.limit 成了布尔 true，
+  // 而 Number(true) === 1 —— 以前会静默只显示 1 条，用户完全摸不着头脑。
+  let code = 0
+  let out = ''
+  try {
+    run('--limit', '--all')
+  } catch (e) {
+    code = e.status
+    out = String(e.stdout || '')
+  }
+  assert.equal(code, 1, '要当用法错误，非零退出')
+  assert.match(out, /--limit 需要一个正整数/)
+  assert.doesNotMatch(out, /1 个会话/, '绝不能显示成「只有 1 个会话」')
+
+  // 合法值照常
+  assert.doesNotMatch(run('list', '--limit', '5'), /需要一个正整数/)
+})
+
+test('cli: ass --all 真的跨仓库，且每行标出所属项目', () => {
+  const t3 = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ass-all-')))
+  const repoA = path.join(t3, 'proj-a')
+  const repoB = path.join(t3, 'proj-b')
+  fs.mkdirSync(repoA, { recursive: true })
+  fs.mkdirSync(repoB, { recursive: true })
+  const dir = path.join(t3, 'claude-projects')
+  for (const [sub, id, cwd, text] of [
+    ['-a', 'b1', repoA, 'A 项目的事'],
+    ['-b', 'b2', repoB, 'B 项目的事'],
+  ]) {
+    fs.mkdirSync(path.join(dir, sub), { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, sub, `${id}.jsonl`),
+      JSON.stringify({ type: 'user', cwd, timestamp: '2026-09-03T10:00:00.000Z', origin: { kind: 'human' }, message: { content: [{ type: 'text', text }] } }) + '\n',
+    )
+  }
+  const e3 = { ...env, ASS_CLAUDE_DIR: dir, ASS_DATA_DIR: path.join(t3, 'data') }
+  // cwd 换成了仓库目录，所以 cli.js 必须用绝对路径（模块加载时 cwd 还是包根）
+  const CLI = path.resolve('dist/cli.js')
+  const inA = (...args) =>
+    execFileSync(process.execPath, [CLI, ...args], { env: e3, encoding: 'utf8', cwd: repoA })
+
+  // 不带 --all：只看当前仓库
+  const one = inA('status')
+  assert.match(one, /1 个会话/)
+  assert.doesNotMatch(one, /B 项目的事/)
+
+  // 带 --all：两个仓库的都在，且各自标出项目名
+  const all = inA('status', '--all')
+  assert.match(all, /^全部仓库/m, '表头要说清这是跨仓库')
+  assert.match(all, /2 个会话/)
+  assert.match(all, /A 项目的事/)
+  assert.match(all, /B 项目的事/)
+  assert.match(all, /\[proj-a\]/)
+  assert.match(all, /\[proj-b\]/)
+})
