@@ -21,11 +21,13 @@ import {
   taskSetNote,
   taskSetStatus,
   taskSummary,
+  taskGoalLabel,
+  taskGoalSource,
   taskView,
   type TaskRecord,
   type TaskView,
 } from './core/task'
-import { addContext, contextFile, contextLine, contextMarkdown, KIND_LABEL, readContext, updateContext, type ContextKind } from './core/context'
+import { addContext, contextFile, contextLine, contextMarkdown, KIND_LABEL, REVIEW_LABEL, readContext, updateContext, type ContextKind } from './core/context'
 import { LEVELS, estimateTokens, parseLevel } from './core/budget'
 import { armGuard, assertWritable, guardSummary, protectedPaths } from './core/roguard'
 import { buildAdapters } from './adapters/registry'
@@ -65,11 +67,12 @@ interface Args {
 const VALUE_FLAGS = [
   'repo', 'limit', 'agent', 'rounds', 'tail', 'since', 'out', 'summary', 'files', 'scan',
   'decision', 'decide', 'dead-end', 'deadend', 'constraint', 'todo', 'note', 'done', 'remove',
-  'label', 'goal', 'budget', 'tokens',
+  'label', 'goal', 'budget', 'tokens', 'session', 'suggestion', 'confirm', 'review', 'result', 'evidence', 'related-to', 'supersedes', 'cancel', 'reopen',
 ]
 
 /** 记录类参数：flag 名 → 条目类型 */
 const CONTEXT_FLAGS: [string, ContextKind][] = [
+  ['suggestion', 'suggestion'],
   ['decision', 'decision'],
   ['decide', 'decision'],
   ['dead-end', 'dead-end'],
@@ -183,28 +186,37 @@ function cmdStatus(args: Args, cfg: Config): void {
 
   const tasks = taskList({ repo: all ? null : repoDir })
   const ctxLine = all ? '' : contextLine(repoDir)
-  const head = [`${sessions.length} 个会话`]
-  if (tasks.length) head.push(`${tasks.length} 个任务`)
+  const head = [truncated ? `显示最近 ${sessions.length} 个会话（还有更多）` : `${sessions.length} 个会话`]
+  if (tasks.length) head.push(`${tasks.length} 个工作任务`)
   console.log(c.dim(head.join(' · ')))
 
   if (tasks.length) {
     console.log('')
-    console.log(c.bold('任务'))
+    console.log(c.bold('工作任务'))
     for (const t of tasks) {
       const v = taskView(t.id, cfg)
       console.log(`${c.cyan(t.id)}  ${c.bold(t.name)}   ${c.dim(taskSummary(t))}`)
-      if (v?.goal?.text) console.log(`    ${c.dim('目标')}   ${v.goal.text}`)
-      console.log(`    ${c.dim('接着做')} ${c.green(`在新 agent 里说「继续 ${t.name}」`)}`)
+      if (v?.goal?.text) console.log(`    ${c.dim(taskGoalLabel(v.goal))}   ${v.goal.text}`)
+      if (v?.goal) console.log(c.dim(`    来源：${taskGoalSource(v.goal)}`))
+      console.log(`    查看详情 ${c.cyan(`ass resume ${t.id}`)}`)
+      console.log(`    ${c.dim('如何接续')} ${c.green(`在已配置同步规则的 agent 里说「继续 ${t.name}」`)}`)
     }
     console.log('')
-    console.log(c.dim('  任务 = 把跨 agent 的多段会话绑成一件事。换 agent 时不用复述，说一句「继续 <任务名>」即可。'))
+    console.log(c.dim('  工作任务把同一件事的多个会话关联起来；待办是其中尚需处理的具体事项。'))
+  }
+
+  if (!tasks.length) {
+    console.log('\n工作任务 · 尚未建立')
+    console.log(c.dim('  会话不会自动归为任务。跨会话接续同一件事时，可命名并关联相关会话。'))
+    console.log('  创建并关联：ass task add "<任务名>" <会话引用>')
+    console.log(c.dim('  只查看历史或搬运提问，无需创建任务。'))
   }
 
   if (ctxLine) {
     console.log('')
-    console.log(`${c.bold('记着的上下文')}  ${c.cyan(ctxLine)}`)
-    console.log(c.dim('  agent 干活时随手记下的判断 / 坑 / 待办。换 agent 时它会置顶出现在交接摘要里，'))
-    console.log(c.dim('  不用重新讲一遍。ass context 看详情。'))
+    console.log(`${c.bold('项目笔记')}  ${c.cyan(ctxLine)}`)
+    console.log(c.dim('  此前主动保存的仓库共享记录，会放在交接摘要前面。'))
+    console.log(c.dim('  内容和完成状态可能尚未更新。查看笔记：ass context；原始提问：ass last <引用>。'))
   }
 
   console.log('')
@@ -269,7 +281,9 @@ function cmdStatus(args: Args, cfg: Config): void {
     console.log(`  ${c.dim('同一个 agent 接着聊')}`)
     console.log(`      ${c.green(newestCmd)}`)
   }
-  console.log(`  ${c.dim('换个 agent 带上这段上下文')}`)
+  console.log(`  ${c.dim('查看原始提问')} ${c.cyan(`ass last ${newestRef}`)}`)
+  console.log(`  ${c.dim('查看完整对话')} ${c.cyan(`ass show ${newestRef} --full`)}`)
+  console.log(`  ${c.dim('换个 agent 带上交接摘要')}`)
   console.log(`      ${c.green(`ass brief ${newestRef}`)} ${c.dim('  输出交接摘要，可直接粘贴')}`)
   console.log(`      ${c.dim(`或在别的 agent 里说「看下 ${newestRef} 的交接摘要」`)}`)
 
@@ -374,6 +388,7 @@ function cmdShow(args: Args, cfg: Config): void {
   console.log(`来源    ${s.source}`)
   if (found.adapter.resumeCmd) console.log(`继续    ${c.green(found.adapter.resumeCmd(s))}`)
 
+  console.log(c.dim('对话记录：已解析的用户和助手消息；工具返回等部分原始日志内容可能不包含在内。'))
   const tail = args.flags.full ? undefined : Number(args.flags.tail || 6)
   const turns = readSession(found, tail ? { tail } : {})
   if (turns.length) {
@@ -473,18 +488,38 @@ function cmdNote(args: Args, cfg: Config): void {
 
 function cmdContext(args: Args, cfg: Config): void {
   const repo = path.resolve((args.flags.repo as string) || process.cwd())
-  const items = CONTEXT_FLAGS.map(([flag, kind]) => ({ kind, text: String(args.flags[flag] ?? '').trim(), source: 'ass' })).filter((x) => x.text)
+  const items = CONTEXT_FLAGS.map(([flag, kind]) => ({ kind, text: String(args.flags[flag] ?? '').trim(), source: 'ass', relatedTo: typeof args.flags['related-to'] === 'string' ? args.flags['related-to'] : undefined, supersedes: typeof args.flags.supersedes === 'string' ? args.flags.supersedes : undefined, session: typeof args.flags.session === 'string' ? args.flags.session : undefined })).filter((x) => x.text)
 
+  if ((args.flags['related-to'] || args.flags.supersedes) && !items.length) return usageFail('关联或替代需要同时提供新笔记内容')
+  if (['done', 'cancel', 'reopen', 'remove', 'confirm', 'review'].filter((k) => args.flags[k]).length > 1) return usageFail('每次只能选择一种状态或删除操作')
   if (items.length) {
     const { added, skipped } = addContext(repo, items)
     for (const a of added) console.log(`${c.green('已记录')} ${c.dim(a.id)} ${c.dim(`[${KIND_LABEL[a.kind]}]`)} ${a.text}`)
     if (skipped) console.log(c.dim(`（${skipped} 条重复，已跳过）`))
     console.log('')
   }
+  for (const action of ['confirm', 'review'] as const) {
+    if (typeof args.flags[action] !== 'string') continue
+    if (action === 'review' && typeof args.flags.result !== 'string') return usageFail('--review 需要 --result completed|partial|pending|unknown')
+    const e = updateContext(repo, args.flags[action] as string, {
+      ...(action === 'confirm' ? { confirm: true } : { review: String(args.flags.result) }),
+      evidence: typeof args.flags.evidence === 'string' ? args.flags.evidence : undefined,
+      session: typeof args.flags.session === 'string' ? args.flags.session : undefined,
+    })
+    if (!e) return usageFail(`没有 id 为 ${args.flags[action]} 的条目`)
+    console.log(`${action === 'confirm' ? '已确认授权' : '已保存核对结果'} ${e.id}`)
+  }
   if (typeof args.flags.done === 'string') {
     const e = updateContext(repo, args.flags.done, { done: true })
-    console.log(e ? `${c.green('已完成')} ${e.id} ${e.text}` : c.yellow(`没有 id 为 ${args.flags.done} 的条目`))
+    if (!e) return usageFail(`没有 id 为 ${args.flags.done} 的条目`)
+    console.log(`${c.green('已完成')} ${e.id} ${e.text}`)
     console.log('')
+  }
+  for (const action of ['cancel', 'reopen'] as const) {
+    if (typeof args.flags[action] !== 'string') continue
+    const e = updateContext(repo, args.flags[action] as string, { [action]: true })
+    if (!e) return usageFail(`没有 id 为 ${args.flags[action]} 的条目`)
+    console.log(`${action === 'cancel' ? '已取消' : '已重新打开'} ${e.id} ${e.text}`)
   }
   if (typeof args.flags.remove === 'string') {
     const e = updateContext(repo, args.flags.remove, { remove: true })
@@ -510,10 +545,20 @@ function cmdContext(args: Args, cfg: Config): void {
     console.log(c.dim(`文件：${contextFile(repo)}`))
     return
   }
-  console.log(contextMarkdown(repo, { includeDone: Boolean(args.flags.all) }))
+  console.log(contextMarkdown(repo, { includeDone: Boolean(args.flags.all), chars: args.flags.details ? undefined : 160 }))
   console.log('')
-  console.log(c.dim(`共 ${ctx.entries.length} 条 · ${contextFile(repo)}`))
-  console.log(c.dim('勾掉待办：ass context --done c4    删除：ass context --remove c4    连已完成的也看：--all'))
+  const visible = ctx.entries.filter((e) => args.flags.all || (!e.done && !e.cancelled && !e.supersededBy))
+  console.log(c.dim(`显示 ${visible.length} / 共 ${ctx.entries.length} 条 · ${contextFile(repo)}`))
+  if (!args.flags.details && visible.some((e) => e.text.length > 160 || e.text.includes('\n'))) console.log(c.dim('长笔记仅显示截短预览；完整内容：ass context --details（包含已完成项再加 --all）'))
+  const pending = ctx.entries.find((e) => e.kind === 'todo' && !e.done && !e.cancelled)
+  if (pending) {
+    console.log(c.dim(`标记待办完成：ass context --done ${pending.id}（手动标记，不等同于核对）`))
+    console.log(c.dim(`核对进展：ass context --review ${pending.id} --result completed|partial|pending|unknown --evidence "代码或测试依据"`))
+  }
+  const unconfirmed = ctx.entries.find((e) => !e.cancelled && !e.done && (e.kind === 'suggestion' || (e.kind === 'todo' && !e.authorization)))
+  if (unconfirmed) console.log(c.dim(`已有用户授权时记录：ass context --confirm ${unconfirmed.id} --evidence "用户授权原话"`))
+  console.log(c.dim(`删除记录：ass context --remove ${ctx.entries[0]!.id}    包含已完成、取消及被替代记录：ass context --all`))
+  console.log(c.dim('找回原始提问：ass last <会话引用>    阅读完整对话：ass show <会话引用> --full'))
 }
 
 // ---------------------------------------------------------------- 任务
@@ -544,12 +589,13 @@ function taskBits(t: TaskRecord): string {
 function printTaskView(v: TaskView): void {
   const head = [`${v.sessions} 个会话`, v.chain.join('→')]
   if (v.status === 'done') head.push('已完成')
-  console.log(`${c.bold('任务')} ${c.cyan(v.name)}  ${c.dim(head.filter(Boolean).join(' · '))}`)
+  console.log(`${c.bold('工作任务')} ${c.cyan(v.name)}  ${c.dim(head.filter(Boolean).join(' · '))}`)
   console.log(c.dim('─'.repeat(48)))
 
   if (v.goal) {
-    console.log(`${c.bold('原始目标')}${v.goal.from ? c.dim(`（${v.goal.from}）`) : ''}`)
+    console.log(`${c.bold(taskGoalLabel(v.goal))}${v.goal.from ? c.dim(`（${v.goal.from}）`) : ''}`)
     console.log(`  ${v.goal.text}`)
+    console.log(c.dim(`  来源：${taskGoalSource(v.goal)}`))
     console.log('')
   }
 
@@ -588,6 +634,9 @@ function printTaskView(v: TaskView): void {
     console.log(c.bold('待办'))
     for (const t of v.todos.slice(0, 8)) {
       console.log(`  ${t.done ? c.dim('☑') : '☐'} ${t.done ? c.dim(t.text) : t.text} ${c.dim(t.id)}`)
+      console.log(c.dim(`    授权：${t.authorization ? '已确认 · ' + t.authorization.evidence : '未记录，不代表用户已同意修改'}`))
+      const review = t.reviews?.[t.reviews.length - 1]
+      if (review) console.log(c.dim(`    核对记录：${REVIEW_LABEL[review.result]} · ${fmtTime(review.at)} · ${review.evidence}`))
     }
     if (v.totalTodos > 8) console.log(c.dim(`  … 其余 ${v.totalTodos - 8} 条见 ass context`))
     console.log('')
@@ -1075,10 +1124,14 @@ ${c.bold('搬上下文')}
                           --tokens 6000 直接给 token 上限（覆盖 --budget）
   ass note [引用]           收尾：把摘要存进本仓库，下次任何 agent 进来都能看到
   ass context             看/记 决策·踩坑·约束·待办（--decision/--dead-end/--constraint/--todo）
-                          勾掉待办 --done c4，删除 --remove c4，连已完成一起看 --all
+                          标记完成 --done <编号>，删除 --remove <编号>，包含已完成 --all，完整笔记 --details；来源会话 --session <引用>
+                          关联记录 --related-to <编号>，新决策替代旧决策 --supersedes <编号>
+                          取消待办 --cancel <编号>，重新打开 --reopen <编号>
+                          建议 --suggestion "内容"；确认 --confirm <编号> --evidence "用户授权原话"
+                          核对 --review <编号> --result completed|partial|pending|unknown --evidence "代码/测试依据"
   ass notes                已保存的交接记录列表
 
-${c.bold('任务')}（把跨 agent 的多段会话绑成一件事）
+${c.bold('工作任务')}（把跨 agent 的多段会话绑成一件事）
   ass resume [任务]        任务总览：原始目标 / 决策 / 各段进展 / 待办
                           --save 存成本仓库的交接记录，--md 输出 Markdown，--out 文件.md，--json
   ass task                 列出本仓库的任务（--all 跨仓库且含已完成）

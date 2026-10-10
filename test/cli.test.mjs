@@ -60,6 +60,10 @@ test('cli: 会话数到上限时给出提示，没到就不给', () => {
 
   // ① 被截断 → 底部给提示，而且要给出可直接复制的命令，不能只说「有更多」
   const capped = r2('status', '--repo', t2, '--limit', '2')
+  assert.match(capped, /显示最近 2 个会话（还有更多）/)
+  assert.match(capped, /工作任务 · 尚未建立/)
+  assert.match(capped, /ass task add/)
+  assert.match(capped, /无需创建任务/)
   assert.match(capped, /只显示了最近 2 个会话/)
   assert.match(capped, /ass --limit 60/, '要给出可复制的命令')
   assert.match(capped, /--all/, '也要提示跨仓库的那个开关')

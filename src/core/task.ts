@@ -2,7 +2,7 @@ import path from 'node:path'
 import { TASK_DIR, type Config } from '../config'
 import type { SessionMeta } from '../types'
 import { fmtTime, plain, readJsonFile, sameRepo, writeJsonFile } from '../util'
-import { readContext, type ContextEntry } from './context'
+import { readContext, REVIEW_LABEL, type ContextEntry } from './context'
 import { findSession, listSessions, readSession, type FoundSession } from './store'
 
 /**
@@ -453,7 +453,7 @@ export interface TaskView {
   chain: string[]
   sessions: number
   segments: TaskSegment[]
-  goal?: { text: string; from?: string; at?: number | null }
+  goal?: { text: string; from?: string; at?: number | null; kind?: 'user' | 'title' | 'cached' | 'message' }
   decisions: TaskDecision[]
   todos: ContextEntry[]
   totalTodos: number
@@ -536,8 +536,8 @@ export function taskView(taskRef: string, cfg: Config): TaskView | null {
   for (const r of repos) {
     const ctx = readContext(r)
     for (const e of ctx.entries) {
-      if (e.kind === 'decision' || e.kind === 'dead-end' || e.kind === 'constraint') decisions.push({ ...e, repo: r })
-      else if (e.kind === 'todo') {
+      if ((e.kind === 'decision' || e.kind === 'dead-end' || e.kind === 'constraint') && !e.supersededBy) decisions.push({ ...e, repo: r })
+      else if (e.kind === 'todo' && !e.cancelled) {
         totalTodos++
         todos.push(e)
       }
@@ -567,14 +567,14 @@ export function taskView(taskRef: string, cfg: Config): TaskView | null {
         return true
       })
     }
-    goal = { text: liveTitle, from: seg0!.ref, at: seg0!.updatedAt ?? null }
+    goal = { kind: 'title', text: liveTitle, from: seg0!.ref, at: seg0!.updatedAt ?? null }
   } else if (task.goal) {
-    goal = { text: task.goal, from: task.goalFrom, at: task.createdAt || null }
+    goal = { kind: userSet ? 'user' : 'cached', text: task.goal, from: task.goalFrom, at: task.createdAt || null }
   } else if (seg0) {
     // 罕见回退：连标题都拿不到（空会话 / 自定义 agent）。读一次全文取第一句。
     const found = findSession(seg0.key, cfg)
     const u = found ? readSession(found).find((t) => t.role === 'user' && t.text.trim()) : undefined
-    if (u) goal = { text: plain(u.text, 200), from: seg0.ref, at: seg0.startedAt }
+    if (u) goal = { kind: 'message', text: plain(u.text, 200), from: seg0.ref, at: seg0.startedAt }
   }
   if (!goal) goal = { text: '', from: undefined, at: null }
 
@@ -596,7 +596,7 @@ export function taskView(taskRef: string, cfg: Config): TaskView | null {
 
 /** 括号里那截概览：`2 段 · claude→codex`。列表里 id 和名字已经单独印了，只要这一截 */
 export function taskSummary(t: TaskRecord): string {
-  const bits = [`${t.sessions.length} 段`]
+  const bits = [`关联 ${t.sessions.length} 个会话`]
   const chain = taskChain(t)
   if (chain.length) bits.push(chain.join('→'))
   if (t.status === 'done') bits.push('已完成')
@@ -622,9 +622,10 @@ export function taskResumeMarkdown(v: TaskView): string {
 
   if (v.goal) {
     L.push('')
-    L.push(`## 原始目标${v.goal.from ? `（${v.goal.from}）` : ''}`)
+    L.push(`## ${taskGoalLabel(v.goal)}${v.goal.from ? `（${v.goal.from}）` : ''}`)
     L.push('')
     L.push(`> ${v.goal.text}`)
+    L.push(`来源：${taskGoalSource(v.goal)}`)
   }
 
   if (v.decisions.length) {
@@ -659,7 +660,12 @@ export function taskResumeMarkdown(v: TaskView): string {
     L.push('')
     L.push('## 待办')
     L.push('')
-    for (const t of v.todos) L.push(`- [${t.done ? 'x' : ' '}] ${t.text} \`${t.id}\``)
+    for (const t of v.todos) {
+      L.push(`- [${t.done ? 'x' : ' '}] ${t.text} \`${t.id}\``)
+      L.push(`  授权：${t.authorization ? '已确认 · ' + t.authorization.evidence : '未记录，不代表用户已同意修改'}`)
+      const review = t.reviews?.[t.reviews.length - 1]
+      if (review) L.push(`  核对记录：${REVIEW_LABEL[review.result]} · ${fmtTime(review.at)} · ${review.evidence}`)
+    }
   }
 
   L.push('')
@@ -672,4 +678,12 @@ export function taskResumeMarkdown(v: TaskView): string {
   // 和上面「各段进展」用同一种短引用，别一条长一条短
   if (first) L.push(`需要某一段的完整交接摘要：\`session_handoff(session: "${first.ref}")\``)
   return L.join('\n').trimEnd()
+}
+
+export function taskGoalLabel(goal: NonNullable<TaskView['goal']>): string {
+  return goal.kind === 'user' ? '任务目标' : goal.kind === 'title' ? '起始会话主题' : goal.kind === 'message' ? '起始会话提问' : '历史目标记录'
+}
+
+export function taskGoalSource(goal: NonNullable<TaskView['goal']>): string {
+  return goal.kind === 'user' ? '用户明确设置' : goal.kind === 'title' ? '首个关联会话的标题，未设置独立任务目标' : goal.kind === 'message' ? '首个关联会话的第一条用户消息，未设置独立任务目标' : '历史缓存，未确认独立任务目标'
 }

@@ -115,7 +115,7 @@ test('Markdown 形状：包含已批准预览里的每一节', () => {
   const md = api.taskResumeMarkdown(api.taskView('支付重构', cfg))
   assert.match(md, /# 任务：支付重构/)
   assert.match(md, /claude→codex/)
-  assert.match(md, /## 原始目标（claude:aaaa-111）/)
+  assert.match(md, /## 起始会话主题（claude:aaaa-111）/)
   assert.match(md, /把支付模块从回调改成 Promise/)
   assert.match(md, /## 决策/)
   assert.match(md, /`c1` 接口错误统一走 msg 字段/)
@@ -180,7 +180,7 @@ test('CLI：task add → task → resume → resume --json', () => {
   assert.match(listed, /命令行任务/)
 
   const resumed = run('resume', '命令行任务')
-  assert.match(resumed, /原始目标/)
+  assert.match(resumed, /起始会话主题/)
   assert.match(resumed, /需求 1-3/)
 
   const asJson = JSON.parse(run('resume', '命令行任务', '--json'))
@@ -256,7 +256,7 @@ test('MCP：session_task 绑定 → session_task_resume 取回 → session_statu
 
   const resume = out.find((r) => r.id === 3).result.content[0].text
   assert.match(resume, /# 任务：MCP 任务/)
-  assert.match(resume, /## 原始目标/)
+  assert.match(resume, /## 起始会话主题/)
   assert.match(resume, /## 各段进展/)
 
   const status = out.find((r) => r.id === 4).result.content[0].text
@@ -282,13 +282,19 @@ test('原始目标取的是会话第一句，而不是「最近 N 条里的第�
   const r = api.taskAttach({ task: '长会话任务', meta: api.findSession('claude:beef-9999', cfg).meta })
   const v = api.taskView(r.task.id, cfg)
   assert.equal(v.goal.text, '这是真正的第一句原始目标', 'tail 切片会让这里取到第 60 轮附近的消息')
-  assert.match(api.taskResumeMarkdown(v), /## 原始目标/)
+  assert.match(api.taskResumeMarkdown(v), /## 起始会话主题/)
 })
 
 test('显式 --goal 能覆盖已经派生错的目标', () => {
   const r = api.taskAttach({ task: '长会话任务', meta: api.findSession('claude:beef-9999', cfg).meta, goal: '人工写的目标' })
   assert.equal(r.task.goal, '人工写的目标', '不给覆盖的话，派生错了只能删任务重建')
   assert.equal(r.task.goalFrom, 'user')
+  const view = api.taskView('长会话任务', cfg)
+  assert.equal(view.goal.kind, 'user')
+  const md = api.taskResumeMarkdown(view)
+  assert.match(md, /## 任务目标/)
+  assert.match(md, /来源：用户明确设置/)
+  assert.doesNotMatch(md, /## 起始会话主题/)
 })
 
 test('MCP：tools/list 暴露两个新工具', async () => {

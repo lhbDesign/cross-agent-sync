@@ -18,7 +18,7 @@
 | --- | --- |
 | 列出**所有 agent** 在**当前仓库**的会话 | `ass` · `ass list` · `session_list` |
 | 跨仓库浏览、按 agent 过滤、看会话规模 | `ass list --all` / `--agent codex` |
-| 看某个会话的完整对话 | `ass show #1` · `session_read` |
+| 看某个会话的完整对话 | `ass show #1 --full` · `session_read` |
 | **把上一次的提问原样搬过来**（含图片落盘） | `ass last #1` · `session_last` |
 | 连问多轮一起搬 | `ass last #1 --rounds 3` |
 | **生成交接摘要**（目标 / 时间线 / 文件 / 结论 / 待办） | `ass brief #1` · `session_handoff` |
@@ -239,7 +239,7 @@ ass resume 支付重构
 
 ```
 任务 支付重构  2 个会话 · claude→codex
-原始目标（claude:8dda036d）
+起始会话主题（claude:8dda036d）
   把支付模块从回调改成 Promise
 决策
   · 接口错误统一走 msg 字段 c4
@@ -581,3 +581,69 @@ src/cli.ts          命令行          src/mcp.ts   MCP server（规划中）
 ## License
 
 MIT
+
+### 看懂任务、笔记与原始对话
+
+- **工作任务**：将同一件事的多个会话关联起来。“关联 2 个会话 · claude→codex”表示两个已关联会话的 agent 接续顺序，不是两条待办。
+- **任务目标**：用户显式设置的目标。未设置时显示“起始会话主题”及来源，它来自首个关联会话的标题，不代表工具综合理解了整个任务。
+- **项目笔记**：用户或 agent 此前主动保存的仓库共享记录，不是原始提示词，也不是执行命令时重新生成的摘要。内容和完成状态可能尚未更新。
+- **交接摘要**：工具按规则抽取并按预算裁剪，可能遗漏信息。
+- **完整对话**：适配器解析出的用户与助手消息，不是原始日志的无损副本；部分工具返回等内容不会包含在内。
+
+| 想查看的内容 | 命令 |
+| --- | --- |
+| 最后一次原始提问 | `ass last <会话引用>` |
+| 完整的已解析对话 | `ass show <会话引用> --full` |
+| 交接摘要 | `ass brief <会话引用>` |
+| 项目笔记概览（长笔记截短） | `ass context` |
+| 项目笔记完整内容 | `ass context --details` |
+| 包含已完成待办的完整笔记 | `ass context --all --details` |
+
+笔记显示记录时间、保存方式、已知的来源会话和待办标记状态。旧记录缺失的信息显示“未记录”，不会推断记录者。CLI 的新笔记可以用 `--session agent:id` 保存已知来源；MCP 的 `session_remember` 使用可选的 `session` 参数。
+
+保存时一条笔记只表达一个事项：决策记录方案与原因；待办记录具体动作及完成条件；工作进展和验证结果使用 `--note` / `note`。确认完成后使用 `ass context --done <实际编号>`，工具不会自动把未勾选待办当成仍未完成的事实。
+
+### 更新笔记状态与关联历史
+
+以下编号仅为示例，请替换为 `ass context` 中实际存在的编号：
+
+```bash
+# 一条进展关联到待办；不会自动把待办标记完成
+ass context --note "本地验证通过，线上尚未验证" --related-to c3
+# 将大待办拆成具体事项：逐条新增并关联原待办，再显式取消原待办
+ass context --todo "验证线上下载，确认文件内容正确" --related-to c3
+ass context --cancel c3
+# 确认完成 / 重新打开
+ass context --done c4
+ass context --reopen c4
+# 新决策替代旧决策，保留两条记录
+ass context --decision "采用新方案，因为旧方案不支持并发" --supersedes c1
+# 查看包括已完成、已取消待办和被替代决策在内的历史
+ass context --all --details
+```
+
+MCP `session_remember` 对应参数为 `related_to`、`supersedes`、`cancel`、`reopen`。替代只适用于决策；状态操作只适用于待办。不自动推断两条笔记的关联或完成情况。被引用的记录不能直接删除，避免丢失来源；取消和替代均保留历史。
+
+没有工作任务时，首页会说明尚未建立并给出创建方式。会话列表超过显示上限时，首页标注“显示最近 N 个会话（还有更多）”，不会将显示数量当作仓库总数。
+
+### 区分建议、授权与实际进展
+
+“待办还没勾选”不能说明用户已同意修改，也不能说明别的 AI 没有完成。新版本将两件事分开记录：
+
+- 未确认的 AI 想法保存为 **建议 / 待确认**，不会计入待办。
+- 用户明确授权后，通过 `confirm` 保存授权依据，建议转为待办。
+- 旧待办，以及直接用 `--todo` 保存而未确认的事项，显示 **授权未记录**；不会自动升级为已授权。
+- 接手的 AI 应先只读核对当前代码和测试，再记录 **已完成、部分完成、仍需处理、无法确认**，附依据与局限。历史会话只能提供线索。
+
+```bash
+ass context --suggestion "建议重构请求层"
+# 使用上一步实际返回的编号；依据应是已有的用户授权，不能编造
+ass context --confirm c7 --evidence "用户明确要求按请求层方案修改" --session codex:<实际ID>
+ass context --review c7 --result partial --evidence "拦截器已修复，下载路径尚未验证"
+ass context --review c7 --result completed --evidence "已核对当前代码，相关集成测试通过"
+ass context --all --details
+```
+
+MCP `session_remember` 提供同名参数 `suggestion`、`confirm`、`review`、`result`、`evidence`。`result` 可取 `completed`、`partial`、`pending`、`unknown`。确认与核对必须附依据；已取消事项需先重新打开。核对完成会标记完成，其余结果保留为未完成标记，所有核对结果均保留历史。核对不代表授权，重新打开也不会凭空产生授权。
+
+这是 **AI 核对、工具保存依据与结果** 的流程，工具本身不会自动分析全部仓库或证明调用者填写的依据真实。`--done` 仍是兼容的手动完成标记，不等同于有证据的核对结果。现有已安装 agent 需要更新同步规则并重新加载 MCP，才能使用新指引和参数。

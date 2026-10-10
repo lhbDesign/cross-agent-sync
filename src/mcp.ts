@@ -141,6 +141,11 @@ const TOOLS: ToolDef[] = [
         out.push(`任务把跨 agent 的多段会话绑成一件事。**先取上下文再动手**：\`session_task_resume(task: "${tasks[0]!.name}")\``)
         out.push('')
       }
+      if (!tasks.length) {
+        out.push('## 工作任务 · 尚未建立')
+        out.push('会话不会自动归为任务。用户命名并选择相关会话后，可用 session_task 关联；只读取历史无需建任务。')
+        out.push('')
+      }
       if (note) {
         out.push(`## 上次收尾留下的交接记录（${fmtTime(note.entry.at)}，来自 ${note.entry.key}）`)
         out.push('')
@@ -253,7 +258,7 @@ const TOOLS: ToolDef[] = [
       if (mode === 'summary') return buildSummary(found.meta, readSession(found))
       const n = Number(args.messages) || 6
       const turns = mode === 'tail' ? readSession(found, { tail: n }) : readSession(found)
-      const header = mode === 'full' ? `${found.meta.key}（全文）` : `${found.meta.key}（最后 ${turns.length} 条）`
+      const header = mode === 'full' ? `${found.meta.key}（完整对话：已解析的用户和助手消息；不等同于原始日志的无损副本）` : `${found.meta.key}（最后 ${turns.length} 条）`
       return `${header}\n\n${turnsToMarkdown(turns)}`
     },
   },
@@ -371,14 +376,24 @@ const TOOLS: ToolDef[] = [
       'Record a durable, structured note about THIS repository so that every agent — including future sessions of ' +
       'yourself — sees it. Use it DURING work (not only at the end): right after you make an architectural decision, ' +
       'or discover an approach that does NOT work (so nobody repeats it). These notes are shown at the TOP of every ' +
-      'handoff, which makes them more valuable than any auto-summary.',
+      'handoff. Record one clear item at a time. Use decision for a choice and its reason, todo for one unfinished action with completion criteria, and note for progress and validation results. Notes may become outdated; never infer completion without evidence. On handoff, read current code and test evidence before reviewing old todos; use completed/partial/pending/unknown with evidence and known session. Review records a caller assessment, not an automatic code scan. Suggestion and unknown authorization are not permission to edit code.',
     inputSchema: {
       type: 'object',
       properties: {
+        suggestion: { type: 'string', description: 'An unapproved suggestion; never treat as permission to modify code.' },
+        confirm: { type: 'string', description: 'Suggestion/todo ID explicitly authorized by the user. Requires evidence of user authorization.' },
+        review: { type: 'string', description: 'Todo ID checked against current code/tests. Requires result and evidence; not inferred from old chat alone.' },
+        result: { type: 'string', enum: ['completed', 'partial', 'pending', 'unknown'] },
+        evidence: { type: 'string', description: 'User authorization quote for confirm, or current code/test findings and limitations for review.' },
+        related_to: { type: 'string', description: 'Existing note ID to link this new progress or todo to; does not change its status.' },
+        supersedes: { type: 'string', description: 'Existing active decision ID replaced by this new decision; preserves both records.' },
+        cancel: { type: 'string', description: 'Cancel a todo by ID, preserving its history.' },
+        reopen: { type: 'string', description: 'Reopen a completed or cancelled todo by ID.' },
+        session: { type: 'string', description: 'Known source session reference (agent:id). Omit when unknown; do not guess.' },
         decision: { type: 'string', description: 'A decision and why, e.g. "token 改用 refresh token 轮换，因为旧接口不支持并发刷新"' },
         dead_end: { type: 'string', description: 'An approach that does NOT work / was reverted, so the next agent does not retry it' },
         constraint: { type: 'string', description: 'A rule that must not be broken, e.g. "不要改旧版 SSO 的接口"' },
-        todo: { type: 'string', description: 'Something still to do' },
+        todo: { type: 'string', description: 'An outstanding action. Authorization remains unknown until confirm with user evidence; use suggestion for unapproved AI ideas.' },
         note: { type: 'string', description: 'Anything else worth persisting' },
         done: { type: 'string', description: 'Mark a recorded todo as done, by its id (e.g. "c4")' },
         remove: { type: 'string', description: 'Delete an entry by its id' },
@@ -391,18 +406,33 @@ const TOOLS: ToolDef[] = [
         ['decision', 'decision'],
         ['dead_end', 'dead-end'],
         ['constraint', 'constraint'],
+        ['suggestion', 'suggestion'],
         ['todo', 'todo'],
         ['note', 'note'],
       ]
       const items = kinds
-        .map(([flag, kind]) => ({ kind, text: String(args[flag] ?? '').trim(), source: 'agent' }))
+        .map(([flag, kind]) => ({ kind, text: String(args[flag] ?? '').trim(), source: 'agent', relatedTo: typeof args.related_to === 'string' ? args.related_to : undefined, supersedes: typeof args.supersedes === 'string' ? args.supersedes : undefined, session: typeof args.session === 'string' ? args.session : undefined }))
         .filter((x) => x.text)
+      if ((args.related_to || args.supersedes) && !items.length) throw new Error('关联或替代需要同时提供新笔记内容')
+      if (['done', 'cancel', 'reopen', 'remove', 'confirm', 'review'].filter((k) => args[k]).length > 1) throw new Error('每次只能选择一种状态或删除操作')
       if (items.length) addContext(repo, items)
-      if (typeof args.done === 'string' && args.done.trim()) updateContext(repo, args.done.trim(), { done: true })
-      if (typeof args.remove === 'string' && args.remove.trim()) updateContext(repo, args.remove.trim(), { remove: true })
+      let result = ''
+      for (const action of ['confirm', 'review'] as const) {
+        if (typeof args[action] !== 'string') continue
+        if (action === 'review' && typeof args.result !== 'string') throw new Error('核对需要 result')
+        const e = updateContext(repo, args[action], { ...(action === 'confirm' ? { confirm: true } : { review: String(args.result) }), evidence: typeof args.evidence === 'string' ? args.evidence : undefined, session: typeof args.session === 'string' ? args.session : undefined })
+        if (!e) throw new Error(`没有 id 为 ${args[action]} 的条目`)
+        result = `${action === 'confirm' ? '已确认授权' : '已保存核对结果'} ${e.id}。\n`
+      }
+      for (const action of ['done', 'cancel', 'reopen', 'remove'] as const) {
+        if (typeof args[action] !== 'string' || !args[action].trim()) continue
+        const id = args[action].trim()
+        if (!updateContext(repo, id, { [action]: true })) throw new Error(`没有 id 为 ${id} 的条目`)
+        result = `${({ done: '已标记完成', cancel: '已取消', reopen: '已重新打开', remove: '已删除' })[action]} ${id}。\n`
+      }
       const md = contextMarkdown(repo)
-      if (!md) return `没有记录任何内容。请至少给一个 decision / dead_end / constraint / todo。\n（仓库：${repo}）`
-      return `已记录。这个仓库当前的上下文：\n\n${md}`
+      if (!md) return `${result}没有记录任何内容。请至少给一个 decision / dead_end / constraint / todo。\n（仓库：${repo}）`
+      return `${result}已记录。这个仓库当前的项目笔记：\n\n${md}`
     },
   },
   {

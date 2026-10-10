@@ -227,7 +227,7 @@ export function buildBrief(meta: SessionMeta, turns: Turn[], opts: BriefOptions 
     priority: 0,
     mandatory: true,
     render: () => {
-      const L: string[] = [`# 交接摘要 · ${meta.title}`, '']
+      const L: string[] = [`# 交接摘要 · ${meta.title}`, '', '由规则抽取并按预算裁剪，可能遗漏信息；项目笔记是此前主动保存的记录。原始提问用 ass last，完整对话用 ass show --full。', '']
       L.push('| 项 | 值 |')
       L.push('| --- | --- |')
       L.push(`| 来源 Agent | **${meta.agentLabel}** (\`${meta.key}\`) |`)
@@ -412,6 +412,8 @@ function fmtRange(meta: SessionMeta): string {
 export function buildSummary(meta: SessionMeta, turns: Turn[]): string {
   const L: string[] = []
   const users = turns.filter((t) => t.role === 'user')
+  L.push('会话概要：用户输入与最后回复的截短预览；完整对话请使用 session_read mode=full。')
+  L.push('')
   L.push(`**${meta.agentLabel}** \`${meta.key}\``)
   L.push('')
   L.push(`- 标题：${meta.title}`)
