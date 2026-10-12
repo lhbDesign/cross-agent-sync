@@ -1,7 +1,7 @@
 {
   "name": "cross-agent-sync",
-  "version": "0.2.2",
-  "description": "跨 agent 会话同步：换 agent 或新开会话时，一条命令把上次的上下文、原始提问（含图片）搬过来。支持 Claude Code / Codex / Cursor / OpenCode / Kiro / Trae 与自定义 agent。",
+  "version": "0.3.1",
+  "description": "Cross-agent session sync: when you switch agents or start a new chat, one command brings over prior context, the original question (including images). Supports Claude Code / Codex / Cursor / OpenCode / Kiro / Trae and custom agents.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lhbDesign/cross-agent-sync.git"
@@ -46,6 +46,7 @@
   "files": [
     "dist",
     "README.md",
+    "README.zh-CN.md",
     "CHANGELOG.md",
     "LICENSE"
   ],

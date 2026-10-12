@@ -217,7 +217,8 @@ test('CLI：ass task add 不给引用 = 绑本仓库最近的会话', () => {
 test('CLI：ass resume --save 落成本仓库的交接记录', () => {
   const out = run('resume', '支付重构', '--save')
   assert.match(out, /已存成本仓库的交接记录/)
-  const latest = path.join(home, 'data', 'handoffs', 'pay-refactor', 'latest.md')
+  const latest = api.latestNote(proj)?.file
+  assert.ok(latest, '应按完整仓库身份找到交接记录')
   assert.ok(fs.existsSync(latest), 'latest.md 应该落盘')
   assert.match(fs.readFileSync(latest, 'utf8'), /# 任务：支付重构/)
   // 落盘之后，ass 首屏和 session_status 都能自动看到它

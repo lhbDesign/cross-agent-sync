@@ -27,7 +27,7 @@ import {
   type TaskRecord,
   type TaskView,
 } from './core/task'
-import { addContext, contextFile, contextLine, contextMarkdown, KIND_LABEL, REVIEW_LABEL, readContext, updateContext, type ContextKind } from './core/context'
+import { applyContextChange, type ContextPatch, addContext, contextFile, contextLine, contextMarkdown, KIND_LABEL, REVIEW_LABEL, readContext, updateContext, type ContextKind } from './core/context'
 import { LEVELS, estimateTokens, parseLevel } from './core/budget'
 import { armGuard, assertWritable, guardSummary, protectedPaths } from './core/roguard'
 import { buildAdapters } from './adapters/registry'
@@ -488,49 +488,36 @@ function cmdNote(args: Args, cfg: Config): void {
 
 function cmdContext(args: Args, cfg: Config): void {
   const repo = path.resolve((args.flags.repo as string) || process.cwd())
+  for (const [flag] of CONTEXT_FLAGS) {
+    if (args.flags[flag] !== undefined && (typeof args.flags[flag] !== 'string' || !String(args.flags[flag]).trim())) throw new Error(`--${flag} 需要笔记内容`)
+  }
   const items = CONTEXT_FLAGS.map(([flag, kind]) => ({ kind, text: String(args.flags[flag] ?? '').trim(), source: 'ass', relatedTo: typeof args.flags['related-to'] === 'string' ? args.flags['related-to'] : undefined, supersedes: typeof args.flags.supersedes === 'string' ? args.flags.supersedes : undefined, session: typeof args.flags.session === 'string' ? args.flags.session : undefined })).filter((x) => x.text)
 
-  if ((args.flags['related-to'] || args.flags.supersedes) && !items.length) return usageFail('关联或替代需要同时提供新笔记内容')
-  if (['done', 'cancel', 'reopen', 'remove', 'confirm', 'review'].filter((k) => args.flags[k]).length > 1) return usageFail('每次只能选择一种状态或删除操作')
-  if (items.length) {
-    const { added, skipped } = addContext(repo, items)
-    for (const a of added) console.log(`${c.green('已记录')} ${c.dim(a.id)} ${c.dim(`[${KIND_LABEL[a.kind]}]`)} ${a.text}`)
-    if (skipped) console.log(c.dim(`（${skipped} 条重复，已跳过）`))
-    console.log('')
-  }
-  for (const action of ['confirm', 'review'] as const) {
-    if (typeof args.flags[action] !== 'string') continue
-    if (action === 'review' && typeof args.flags.result !== 'string') return usageFail('--review 需要 --result completed|partial|pending|unknown')
-    const e = updateContext(repo, args.flags[action] as string, {
-      ...(action === 'confirm' ? { confirm: true } : { review: String(args.flags.result) }),
+  if ((args.flags['related-to'] || args.flags.supersedes) && !items.length) throw new Error('关联或替代需要同时提供新笔记内容')
+  if (['done', 'cancel', 'reopen', 'remove', 'confirm', 'review'].filter((k) => args.flags[k]).length > 1) throw new Error('每次只能选择一种状态或删除操作')
+  const action = ['done', 'cancel', 'reopen', 'remove', 'confirm', 'review'].find((key) => args.flags[key] !== undefined)
+  let operation: { id: string; patch: ContextPatch } | undefined
+  if (action) {
+    const id = args.flags[action]
+    if (typeof id !== 'string' || !id.trim()) throw new Error(`--${action} 需要条目编号`)
+    if (action === 'review' && typeof args.flags.result !== 'string') throw new Error('--review 需要 --result completed|partial|pending|unknown')
+    operation = { id: id.trim(), patch: {
+      ...(action === 'review' ? { review: String(args.flags.result) } : { [action]: true }),
       evidence: typeof args.flags.evidence === 'string' ? args.flags.evidence : undefined,
       session: typeof args.flags.session === 'string' ? args.flags.session : undefined,
-    })
-    if (!e) return usageFail(`没有 id 为 ${args.flags[action]} 的条目`)
-    console.log(`${action === 'confirm' ? '已确认授权' : '已保存核对结果'} ${e.id}`)
+    } }
   }
-  if (typeof args.flags.done === 'string') {
-    const e = updateContext(repo, args.flags.done, { done: true })
-    if (!e) return usageFail(`没有 id 为 ${args.flags.done} 的条目`)
-    console.log(`${c.green('已完成')} ${e.id} ${e.text}`)
-    console.log('')
-  }
-  for (const action of ['cancel', 'reopen'] as const) {
-    if (typeof args.flags[action] !== 'string') continue
-    const e = updateContext(repo, args.flags[action] as string, { [action]: true })
-    if (!e) return usageFail(`没有 id 为 ${args.flags[action]} 的条目`)
-    console.log(`${action === 'cancel' ? '已取消' : '已重新打开'} ${e.id} ${e.text}`)
-  }
-  if (typeof args.flags.remove === 'string') {
-    const e = updateContext(repo, args.flags.remove, { remove: true })
-    console.log(e ? `${c.yellow('已删除')} ${e.id} ${e.text}` : c.yellow(`没有 id 为 ${args.flags.remove} 的条目`))
-    console.log('')
-  }
-
-  const ctx = readContext(repo)
+  const result = items.length || operation ? applyContextChange(repo, items, operation) : { added: [], skipped: 0, updated: undefined, context: readContext(repo) }
+  const ctx = result.context
   if (args.flags.json) {
     console.log(JSON.stringify(ctx, null, 2))
     return
+  }
+  for (const item of result.added) console.log(`${c.green('已记录')} ${item.id} [${KIND_LABEL[item.kind]}] ${item.text}`)
+  if (result.skipped) console.log(c.dim(`（${result.skipped} 条重复，已跳过）`))
+  if (result.updated && action) {
+    const labels: Record<string, string> = { done: '已完成', cancel: '已取消', reopen: '已重新打开', remove: '已删除', confirm: '已确认授权', review: '已保存核对结果' }
+    console.log(`${labels[action]} ${result.updated.id} ${result.updated.text}`)
   }
   if (!ctx.entries.length) {
     console.log(c.dim('这个仓库还没有记录任何决策 / 踩坑 / 约束 / 待办。'))

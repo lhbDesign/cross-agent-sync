@@ -88,9 +88,10 @@ export {
   KIND_LABEL,
   readContext,
   repoSlug,
+  applyContextChange,
   updateContext,
 } from './core/context'
-export type { ContextEntry, ContextKind, ContextStats, RepoContext } from './core/context'
+export type { ContextEntry, ContextKind, ContextStats, ContextPatch, RepoContext } from './core/context'
 export {
   currentSession,
   findTask,

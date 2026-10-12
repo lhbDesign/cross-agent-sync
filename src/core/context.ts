@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { HANDOFF_DIR } from '../config'
 import type { Role } from '../types'
-import { fmtTime, plain, readJsonFile, slugify, writeJsonFile } from '../util'
+import { fmtTime, plain, slugify, writeJsonFile, canonicalRepo, repoStorageKey, withFileLock, readStoredJson } from '../util'
 
 /**
  * 「决策 / 踩坑 / 约束 / 待办」这类**由 agent 主动记录**的结构化上下文。
@@ -55,7 +55,7 @@ export interface RepoContext {
 
 /** 仓库 → 目录名（和交接记录用同一套规则） */
 export function repoSlug(repoDir: string): string {
-  return slugify(path.basename(repoDir.replace(/\/+$/, '')) || 'unknown', 60)
+  return repoStorageKey(repoDir)
 }
 
 export function contextFile(repoDir: string): string {
@@ -63,9 +63,19 @@ export function contextFile(repoDir: string): string {
 }
 
 export function readContext(repoDir: string): RepoContext {
-  const f = contextFile(repoDir)
-  const c = readJsonFile<RepoContext>(f, { repo: repoDir, updatedAt: 0, entries: [] })
-  return { repo: c.repo || repoDir, updatedAt: c.updatedAt || 0, lastId: c.lastId, entries: Array.isArray(c.entries) ? c.entries : [] }
+  const repo = canonicalRepo(repoDir)
+  const empty: RepoContext = { repo, updatedAt: 0, entries: [] }
+  let c = readStoredJson<RepoContext | null>(contextFile(repo), null)
+  if (!c) {
+    const legacy = path.join(HANDOFF_DIR, slugify(path.basename(repo) || 'unknown', 60), 'context.json')
+    const old = readStoredJson<RepoContext | null>(legacy, null)
+    // Never claim another same-named project's legacy file.
+    if (old?.repo && canonicalRepo(old.repo) === repo) c = old
+  }
+  if (!c) return empty
+  if (!c.repo || canonicalRepo(c.repo) !== repo || !Array.isArray(c.entries)) throw new Error('项目笔记数据归属或格式不正确，拒绝读取/覆盖')
+  return { ...c, repo, updatedAt: c.updatedAt || 0 }
+
 }
 
 export interface AddItem {
@@ -88,8 +98,7 @@ function nextId(entries: ContextEntry[]): string {
 }
 
 /** 追加若干条；完全重复（同 kind + 同文本）的会被跳过 */
-export function addContext(repoDir: string, items: AddItem[]): { added: ContextEntry[]; skipped: number } {
-  const ctx = readContext(repoDir)
+function addToContext(ctx: RepoContext, items: AddItem[]): { added: ContextEntry[]; skipped: number } {
   const added: ContextEntry[] = []
   let skipped = 0
   for (const it of items) {
@@ -110,17 +119,13 @@ export function addContext(repoDir: string, items: AddItem[]): { added: ContextE
     ctx.entries.push(entry)
     added.push(entry)
   }
-  if (added.length) {
-    ctx.repo = repoDir
-    ctx.updatedAt = Date.now()
-    writeJsonFile(contextFile(repoDir), ctx)
-  }
   return { added, skipped }
 }
 
 /** 勾掉一条待办 / 删掉一条 */
-export function updateContext(repoDir: string, id: string, patch: { done?: boolean; cancel?: boolean; reopen?: boolean; remove?: boolean; confirm?: boolean; review?: string; evidence?: string; session?: string }): ContextEntry | null {
-  const ctx = readContext(repoDir)
+export interface ContextPatch { done?: boolean; cancel?: boolean; reopen?: boolean; remove?: boolean; confirm?: boolean; review?: string; evidence?: string; session?: string }
+
+function updateInContext(ctx: RepoContext, id: string, patch: ContextPatch): ContextEntry | null {
   if ([patch.done !== undefined, patch.cancel, patch.reopen, patch.remove, patch.confirm, patch.review !== undefined].filter(Boolean).length !== 1) throw new Error('每次只能选择一种记录操作')
   const i = ctx.entries.findIndex((e) => e.id === id)
   if (i < 0) return null
@@ -129,7 +134,6 @@ export function updateContext(repoDir: string, id: string, patch: { done?: boole
     ctx.lastId = Math.max(ctx.lastId || 0, Number(nextId(ctx.entries).slice(1)) - 1)
     const [gone] = ctx.entries.splice(i, 1)
     ctx.updatedAt = Date.now()
-    writeJsonFile(contextFile(repoDir), ctx)
     return gone ?? null
   }
   const cur = ctx.entries[i]!
@@ -149,7 +153,6 @@ export function updateContext(repoDir: string, id: string, patch: { done?: boole
       cur.done = patch.review === 'completed'
     }
     ctx.updatedAt = Date.now()
-    writeJsonFile(contextFile(repoDir), ctx)
     return cur
   }
   if (cur.kind !== 'todo' && !(cur.kind === 'suggestion' && (patch.cancel || patch.reopen))) throw new Error('只有待办可以标记完成、取消或重新打开')
@@ -157,8 +160,32 @@ export function updateContext(repoDir: string, id: string, patch: { done?: boole
   cur.done = patch.done === true && !patch.reopen
   cur.cancelled = Boolean(patch.cancel)
   ctx.updatedAt = Date.now()
-  writeJsonFile(contextFile(repoDir), ctx)
   return cur
+}
+
+/** One request is validated in memory and committed once, while holding the lock. */
+export function applyContextChange(repoDir: string, items: AddItem[] = [], operation?: { id: string; patch: ContextPatch }, requireExisting = true) {
+  const repo = canonicalRepo(repoDir)
+  return withFileLock(contextFile(repo), () => {
+    const ctx = readContext(repo)
+    const result = addToContext(ctx, items)
+    const updated = operation ? updateInContext(ctx, operation.id, operation.patch) : undefined
+    if (operation && !updated && requireExisting) throw new Error(`没有 id 为 ${operation.id} 的条目`)
+    if (result.added.length || updated) {
+      ctx.updatedAt = Date.now()
+      writeJsonFile(contextFile(repo), ctx)
+    }
+    return { ...result, updated, context: ctx }
+  })
+}
+
+export function addContext(repoDir: string, items: AddItem[]) {
+  const { added, skipped } = applyContextChange(repoDir, items)
+  return { added, skipped }
+}
+
+export function updateContext(repoDir: string, id: string, patch: ContextPatch): ContextEntry | null {
+  return applyContextChange(repoDir, [], { id, patch }, false).updated ?? null
 }
 
 export interface ContextStats {

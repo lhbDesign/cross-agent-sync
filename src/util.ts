@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import os from 'node:os'
+import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -178,9 +179,64 @@ export function readJsonFile<T>(file: string, fallback: T): T {
 }
 
 export function writeJsonFile(file: string, data: unknown): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`)
+  writeAtomic(file, `${JSON.stringify(data, null, 2)}\n`)
 }
+
+/** Same-directory rename keeps readers from seeing truncated JSON. */
+export function writeAtomic(file: string, text: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`
+  try {
+    fs.writeFileSync(temp, text, { flag: 'wx', mode: 0o600 })
+    fs.renameSync(temp, file)
+  } finally {
+    if (fs.existsSync(temp)) fs.unlinkSync(temp)
+  }
+}
+
+const heldLocks = new Set<string>()
+/** Serializes the entire synchronous read/modify/write, across processes. */
+export function withFileLock<T>(file: string, fn: () => T): T {
+  const lock = path.resolve(`${file}.lock`)
+  if (heldLocks.has(lock)) return fn()
+  fs.mkdirSync(path.dirname(lock), { recursive: true })
+  const deadline = Date.now() + 5000
+  while (true) {
+    try { fs.mkdirSync(lock); break } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      if (Date.now() >= deadline) throw new Error(`等待数据锁超时：${lock}。请先确认其他写入进程已退出；若为崩溃遗留锁，再手动删除此目录后重试。`)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+    }
+  }
+  heldLocks.add(lock)
+  try {
+    fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, at: new Date().toISOString() }))
+    return fn()
+  } finally {
+    heldLocks.delete(lock)
+    fs.rmSync(lock, { recursive: true, force: true })
+  }
+}
+
+export function canonicalRepo(dir: string): string {
+  const resolved = path.resolve(dir)
+  return realpath(gitRoot(resolved) || resolved)
+}
+
+/** A readable prefix plus full-path identity; same names never share storage. */
+export function repoStorageKey(dir: string): string {
+  const repo = canonicalRepo(dir)
+  return `${slugify(path.basename(repo) || 'root', 60)}-${createHash('sha256').update(repo).digest('hex').slice(0, 16)}`
+}
+
+/** Missing files are normal; corrupt durable data must never be silently overwritten. */
+export function readStoredJson<T>(file: string, fallback: T): T {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')) as T } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return fallback
+    throw new Error(`无法读取数据文件 ${file}：${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 
 /** 本地时间 `2026-09-18 13:20`；无效值给 `—` */
 export function fmtTime(ms: number | null | undefined): string {

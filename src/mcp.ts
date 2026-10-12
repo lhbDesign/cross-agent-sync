@@ -9,7 +9,7 @@ import { parseLevel } from './core/budget'
 import { armGuard } from './core/roguard'
 import { buildAdapters } from './adapters/registry'
 import { latestNote, listNotes, saveNote } from './core/handoff'
-import { addContext, contextMarkdown, readContext, updateContext } from './core/context'
+import { applyContextChange, type ContextPatch, addContext, contextMarkdown, readContext, updateContext } from './core/context'
 import { formatSearchResult, searchSessions } from './core/search'
 import { findSession, listSessions, readSession } from './core/store'
 import {
@@ -410,25 +410,31 @@ const TOOLS: ToolDef[] = [
         ['todo', 'todo'],
         ['note', 'note'],
       ]
+      for (const [flag] of kinds) {
+        if (args[flag] !== undefined && (typeof args[flag] !== 'string' || !String(args[flag]).trim())) throw new Error(`${flag} 需要笔记内容`)
+      }
       const items = kinds
         .map(([flag, kind]) => ({ kind, text: String(args[flag] ?? '').trim(), source: 'agent', relatedTo: typeof args.related_to === 'string' ? args.related_to : undefined, supersedes: typeof args.supersedes === 'string' ? args.supersedes : undefined, session: typeof args.session === 'string' ? args.session : undefined }))
         .filter((x) => x.text)
       if ((args.related_to || args.supersedes) && !items.length) throw new Error('关联或替代需要同时提供新笔记内容')
       if (['done', 'cancel', 'reopen', 'remove', 'confirm', 'review'].filter((k) => args[k]).length > 1) throw new Error('每次只能选择一种状态或删除操作')
-      if (items.length) addContext(repo, items)
-      let result = ''
-      for (const action of ['confirm', 'review'] as const) {
-        if (typeof args[action] !== 'string') continue
+      const action = ['done', 'cancel', 'reopen', 'remove', 'confirm', 'review'].find((key) => args[key] !== undefined)
+      let operation: { id: string; patch: ContextPatch } | undefined
+      if (action) {
+        const id = args[action]
+        if (typeof id !== 'string' || !id.trim()) throw new Error(`${action} 需要条目编号`)
         if (action === 'review' && typeof args.result !== 'string') throw new Error('核对需要 result')
-        const e = updateContext(repo, args[action], { ...(action === 'confirm' ? { confirm: true } : { review: String(args.result) }), evidence: typeof args.evidence === 'string' ? args.evidence : undefined, session: typeof args.session === 'string' ? args.session : undefined })
-        if (!e) throw new Error(`没有 id 为 ${args[action]} 的条目`)
-        result = `${action === 'confirm' ? '已确认授权' : '已保存核对结果'} ${e.id}。\n`
+        operation = { id: id.trim(), patch: {
+          ...(action === 'review' ? { review: String(args.result) } : { [action]: true }),
+          evidence: typeof args.evidence === 'string' ? args.evidence : undefined,
+          session: typeof args.session === 'string' ? args.session : undefined,
+        } }
       }
-      for (const action of ['done', 'cancel', 'reopen', 'remove'] as const) {
-        if (typeof args[action] !== 'string' || !args[action].trim()) continue
-        const id = args[action].trim()
-        if (!updateContext(repo, id, { [action]: true })) throw new Error(`没有 id 为 ${id} 的条目`)
-        result = `${({ done: '已标记完成', cancel: '已取消', reopen: '已重新打开', remove: '已删除' })[action]} ${id}。\n`
+      const change = items.length || operation ? applyContextChange(repo, items, operation) : null
+      let result = ''
+      if (change?.updated && action) {
+        const labels: Record<string, string> = { done: '已标记完成', cancel: '已取消', reopen: '已重新打开', remove: '已删除', confirm: '已确认授权', review: '已保存核对结果' }
+        result = `${labels[action]} ${change.updated.id}。\n`
       }
       const md = contextMarkdown(repo)
       if (!md) return `${result}没有记录任何内容。请至少给一个 decision / dead_end / constraint / todo。\n（仓库：${repo}）`

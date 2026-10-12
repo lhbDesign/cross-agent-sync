@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { TASK_DIR, type Config } from '../config'
 import type { SessionMeta } from '../types'
-import { fmtTime, plain, readJsonFile, sameRepo, writeJsonFile } from '../util'
+import { fmtTime, plain, sameRepo, writeJsonFile, withFileLock, canonicalRepo, readStoredJson } from '../util'
 import { readContext, REVIEW_LABEL, type ContextEntry } from './context'
 import { findSession, listSessions, readSession, type FoundSession } from './store'
 
@@ -16,11 +16,9 @@ import { findSession, listSessions, readSession, type FoundSession } from './sto
  *
  * 为什么是**全局单文件**而不是 per-repo 目录：
  *   1. 一个任务天然可能横跨两个仓库，per-repo 会强迫它二选一；
- *   2. per-repo 只能靠 slugify(basename(repoDir)) 定位，而同名仓库会撞
- *      （~/work/api 与 ~/personal/api 都是 api），任务作为长期实体不该继承这个隐患；
+ *   2. 任务身份独立于仓库目录，一个任务可以关联多个仓库；
  *   3. 跨仓库列举零成本。
- * 代价是整文件重写：同一毫秒内两个进程同时写会丢一次更新。概率极低且可重做，
- * 与 handoffs/index.json、cache/index.json 是同一套取舍。
+ * 修改过程持有跨进程锁，整份 JSON 用临时文件原子替换。
  */
 export type TaskStatus = 'active' | 'done'
 
@@ -127,7 +125,7 @@ function normalizeTask(raw: unknown): TaskRecord | null {
 }
 
 export function readTasks(): TaskFile {
-  const raw = readJsonFile<Partial<TaskFile>>(TASK_FILE, {})
+  const raw = readStoredJson<Partial<TaskFile>>(TASK_FILE, {})
   const tasks = Array.isArray(raw.tasks) ? raw.tasks : []
   return {
     version: num(raw.version) ?? TASK_VERSION,
@@ -137,25 +135,29 @@ export function readTasks(): TaskFile {
 }
 
 export function writeTasks(file: TaskFile): void {
-  // 防旧版本抹掉新版本数据
-  const onDisk = readJsonFile<{ version?: number }>(TASK_FILE, {})
-  const v = num(onDisk.version)
-  if (v !== null && v > TASK_VERSION) {
-    throw new Error(`任务数据由更新版本的 agent-session-sync 写入，本版本拒绝覆盖：${TASK_FILE}（升级后重试）`)
-  }
-  writeJsonFile(TASK_FILE, { version: TASK_VERSION, tasks: file.tasks, retired: file.retired ?? [] })
+  withFileLock(TASK_FILE, () => {
+    // 防旧版本抹掉新版本数据
+    const onDisk = readStoredJson<{ version?: number }>(TASK_FILE, {})
+    const v = num(onDisk.version)
+    if (v !== null && v > TASK_VERSION) {
+      throw new Error(`任务数据由更新版本的 agent-session-sync 写入，本版本拒绝覆盖：${TASK_FILE}（升级后重试）`)
+    }
+    writeJsonFile(TASK_FILE, { version: TASK_VERSION, tasks: file.tasks, retired: file.retired ?? [] })
+  })
 }
 
 /** 读 → 改 → 只在真变了才落盘。返回 null 表示「没找到目标」，调用方据此报错 */
 function mutate<T>(fn: (file: TaskFile) => T | null): T | null {
-  const before = readTasks()
-  const next: TaskFile = { version: TASK_VERSION, tasks: clone(before.tasks), retired: [...(before.retired ?? [])] }
-  const out = fn(next)
-  if (out === null) return null
-  const a = JSON.stringify({ t: before.tasks, r: before.retired ?? [] })
-  const b = JSON.stringify({ t: next.tasks, r: next.retired ?? [] })
-  if (a !== b) writeTasks(next)
-  return out
+  return withFileLock(TASK_FILE, () => {
+    const before = readTasks()
+    const next: TaskFile = { version: TASK_VERSION, tasks: clone(before.tasks), retired: [...(before.retired ?? [])] }
+    const out = fn(next)
+    if (out === null) return null
+    const a = JSON.stringify({ t: before.tasks, r: before.retired ?? [] })
+    const b = JSON.stringify({ t: next.tasks, r: next.retired ?? [] })
+    if (a !== b) writeTasks(next)
+    return out
+  })
 }
 
 function nextTaskId(file: TaskFile): string {
@@ -525,7 +527,7 @@ export function taskView(taskRef: string, cfg: Config): TaskView | null {
     const live = byKey.get(seg.key)
     const r = live?.repo || seg.repo || task.repo
     if (!r) continue
-    const k = path.basename(r)
+    const k = canonicalRepo(r)
     if (seenRepo.has(k)) continue
     seenRepo.add(k)
     repos.push(r)

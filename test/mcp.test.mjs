@@ -120,3 +120,15 @@ test('MCP：未知工具返回错误而不是崩掉', async () => {
   assert.ok(res[1].error, '应该返回 JSON-RPC error')
   assert.match(res[1].error.message, /未知工具/)
 })
+
+test('MCP：新增与无效核对合并请求失败时，不留下部分笔记', async () => {
+  const repo = fs.mkdtempSync(path.join(fakeHome, 'transaction-'))
+  const result = await rpc([init,
+    call(2, 'session_remember', { repo, todo: '不能残留', review: 'c1', result: 'completed' }),
+    call(3, 'session_remember', { repo }),
+    call(4, 'session_remember', { repo, todo: '可以保存', confirm: 'c1', evidence: '用户说请处理此事' }),
+  ])
+  assert.equal(result.find(r => r.id === 2).result.isError, true)
+  assert.doesNotMatch(textOf(result.find(r => r.id === 3)), /不能残留/)
+  assert.match(textOf(result.find(r => r.id === 4)), /已确认授权 c1/)
+})

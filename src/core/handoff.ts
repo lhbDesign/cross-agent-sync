@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { HANDOFF_DIR } from '../config'
 import type { SessionMeta, Turn } from '../types'
-import { readJsonFile, slugify, writeJsonFile } from '../util'
+import { slugify, writeJsonFile, readStoredJson, canonicalRepo, repoStorageKey, withFileLock, writeAtomic } from '../util'
 import { buildBrief } from './brief'
 
 /**
@@ -25,12 +26,11 @@ export type HandoffIndex = Record<string, NoteEntry>
 const INDEX_FILE = path.join(HANDOFF_DIR, 'index.json')
 
 export function loadIndex(): HandoffIndex {
-  return readJsonFile<HandoffIndex>(INDEX_FILE, {})
+  return readStoredJson<HandoffIndex>(INDEX_FILE, {})
 }
 
 export function repoSlugOf(meta: SessionMeta | null, repoDir: string): string {
-  const raw = meta?.project || path.basename(repoDir.replace(/\/+$/, '')) || 'unknown'
-  return slugify(raw, 60)
+  return repoStorageKey(repoDir)
 }
 
 export interface SavedNote {
@@ -46,7 +46,7 @@ export interface SaveNoteMdInput {
   md: string
   /** 这份记录是谁写的，如 `claude:31c5af10` 或 `task:t1` */
   key?: string
-  /** 优先用它算 slug（等价于会话的 meta.project） */
+  /** 展示用项目名；存储身份始终由完整仓库路径决定 */
   project?: string | null
   /** 文件名里的标题片段 */
   title?: string
@@ -57,31 +57,37 @@ export interface SaveNoteMdInput {
  * 抽取出来是为了让「任务总览」（`ass resume <任务> --save`）也能走同一条路径。
  */
 export function saveNoteMd(input: SaveNoteMdInput): SavedNote {
-  const proj = input.project || path.basename(input.repo.replace(/\/+$/, '')) || ''
-  const slug = slugify(proj || 'unknown', 60)
-  const dir = path.join(HANDOFF_DIR, slug)
-  fs.mkdirSync(dir, { recursive: true })
+  return withFileLock(INDEX_FILE, () => {
+    const repo = canonicalRepo(input.repo)
+    const idx = loadIndex()
+    const proj = input.project || path.basename(input.repo.replace(/\/+$/, '')) || ''
+    const slug = repoStorageKey(repo)
+    const dir = path.join(HANDOFF_DIR, slug)
+    fs.mkdirSync(dir, { recursive: true })
 
-  const md = input.md
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
-  const file = path.join(dir, `${stamp}-${slugify(String(input.title ?? ''), 30)}.md`)
-  fs.writeFileSync(file, md)
-  const latestFile = path.join(dir, 'latest.md')
-  fs.writeFileSync(
-    latestFile,
-    `<!-- agent-session-sync:latest repo=${proj} key=${input.key ?? ''} at=${new Date().toISOString()} -->\n${md}`,
-  )
+    const md = input.md
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const file = path.join(dir, `${stamp}-${slugify(String(input.title ?? ''), 30)}-${randomUUID()}.md`)
+    writeAtomic(file, md)
+    const latestFile = path.join(dir, 'latest.md')
+    writeAtomic(
+      latestFile,
+      `<!-- agent-session-sync:latest repo=${proj} key=${input.key ?? ''} at=${new Date().toISOString()} -->\n${md}`,
+    )
 
-  const idx = loadIndex()
-  idx[slug] = {
-    latest: path.relative(HANDOFF_DIR, latestFile),
-    key: input.key ?? '',
-    at: Date.now(),
-    repo: input.repo,
-    project: input.project ?? (proj || slug),
-  }
-  writeJsonFile(INDEX_FILE, idx)
-  return { file, latestFile, slug, md }
+    for (const [key, entry] of Object.entries(idx)) {
+      if (key !== slug && entry.repo && canonicalRepo(entry.repo) === repo) delete idx[key]
+    }
+    idx[slug] = {
+      latest: path.relative(HANDOFF_DIR, latestFile),
+      key: input.key ?? '',
+      at: Date.now(),
+      repo,
+      project: input.project ?? (proj || slug),
+    }
+    writeJsonFile(INDEX_FILE, idx)
+    return { file, latestFile, slug, md }
+  })
 }
 
 /** 保存一份收尾记录（同时更新 latest.md 和 index.json） */
@@ -101,9 +107,11 @@ export interface LatestNote {
 /** 本仓库上次收尾留下的记录 */
 export function latestNote(repoDir: string): LatestNote | null {
   const idx = loadIndex()
-  const slug = slugify(path.basename(repoDir.replace(/\/+$/, '')) || 'unknown', 60)
+  const repo = canonicalRepo(repoDir)
+  const slug = idx[repoStorageKey(repo)] ? repoStorageKey(repo) : Object.keys(idx).find((key) => idx[key]?.repo && canonicalRepo(idx[key]!.repo) === repo)
+  if (!slug) return null
   const entry = idx[slug]
-  if (!entry) return null
+  if (!entry || canonicalRepo(entry.repo) !== repo) return null
   const file = path.join(HANDOFF_DIR, entry.latest)
   try {
     return { slug, entry, file, content: fs.readFileSync(file, 'utf8') }
