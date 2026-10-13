@@ -239,11 +239,12 @@ export function readStoredJson<T>(file: string, fallback: T): T {
 
 
 /** 本地时间 `2026-09-18 13:20`；无效值给 `—` */
-export function fmtTime(ms: number | null | undefined): string {
-  if (!ms) return '—'
+export function fmtTime(ms: number | null | undefined, seconds = false): string {
+  if (ms == null || !Number.isFinite(ms)) return '—'
   const d = new Date(ms)
+  if (!Number.isFinite(d.getTime())) return '—'
   const p = (n: number): string => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}${seconds ? `:${p(d.getSeconds())}` : ''}`
 }
 
 /** 文件名友好的短 slug */

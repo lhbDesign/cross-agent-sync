@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
+import { sessionInputs, inputsMarkdown } from './core/inputs'
 import path from 'node:path'
 import process from 'node:process'
 import readline from 'node:readline'
@@ -260,6 +261,25 @@ const TOOLS: ToolDef[] = [
       const turns = mode === 'tail' ? readSession(found, { tail: n }) : readSession(found)
       const header = mode === 'full' ? `${found.meta.key}（完整对话：已解析的用户和助手消息；不等同于原始日志的无损副本）` : `${found.meta.key}（最后 ${turns.length} 条）`
       return `${header}\n\n${turnsToMarkdown(turns)}`
+    },
+  },
+  {
+    name: 'session_inputs',
+    description: 'Show every user input in a session in recorded order, numbered and unabridged, without assistant replies. Only use when the user asks to view their input history; output can be large. Optional round selects one input. Text is adapter-parsed, not a lossless raw log.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session: { type: 'string', description: 'Required session reference, preferably agent:full-id.' },
+        round: { type: 'integer', minimum: 1, description: 'Optional 1-based user input number; omit for all inputs.' },
+      },
+      required: ['session'],
+    },
+    call(args) {
+      if (typeof args.session !== 'string' || !args.session.trim()) throw new Error('请提供会话引用。')
+      if (args.round !== undefined && typeof args.round !== 'number') throw new Error('round 必须是整数。')
+      const found = findSession(args.session, CFG)
+      if (!found) throw new Error(`没找到会话：${args.session}`)
+      return inputsMarkdown(found.meta.key, sessionInputs(readSession(found), args.round as number | undefined))
     },
   },
   {

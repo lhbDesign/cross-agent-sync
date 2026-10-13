@@ -1,0 +1,40 @@
+name: CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['18', '22', '24']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: SQLite CLI for adapter fixtures
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Verify npm package (no publish)
+        run: |
+          npm pack --dry-run --json > pack-report.json
+          node --input-type=module -e '
+            import fs from "node:fs";
+            import assert from "node:assert/strict";
+            const pkg = JSON.parse(fs.readFileSync("package.json"));
+            const [packed] = JSON.parse(fs.readFileSync("pack-report.json"));
+            assert.equal(packed.version, pkg.version);
+            for (const file of ["dist/cli.js", "dist/mcp.js", "dist/index.js", "dist/index.d.ts", "README.md", "README.zh-CN.md", "CHANGELOG.md"])
+              assert.ok(packed.files.some(f => f.path === file), file);
+          '

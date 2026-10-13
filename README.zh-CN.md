@@ -94,6 +94,24 @@ ass task add cross-agent-sync开发 claude:4134ec80
 
 ---
 
+## 查看每一次用户输入（0.4.0）
+
+给出会话 ID，按记录顺序列出该会话的所有用户输入全文，不夹杂 AI 回复，不做摘要或截断。例如可读取 13 条用户消息，就显示第 1 到第 13 条。
+
+```bash
+ass inputs claude:4134ec80              # 全部用户输入，按条编号
+ass inputs claude:4134ec80 --round 3    # 只看第 3 条，保留原编号
+ass inputs claude:4134ec80 --round 3 --raw  # 纯正文，方便复制
+ass inputs claude:4134ec80 --out inputs.md # 导出全部输入
+ass inputs claude:4134ec80 --json       # 结构化结果（含附件数据）
+```
+
+MCP 对应 `session_inputs`，传入 `session`，可选 `round`。`--raw` 必须配合 `--round`，只输出这一条解析后的文字正文，不附加标题、附件说明或换行，也可配合 `--out` 保存。默认展示图片数量和可读取的文件附件文字，不会自动将图片转成文字或导出图片。
+
+时间按运行工具的电脑本地时区显示为 `YYYY-MM-DD HH:mm:ss（本地时间）`。例如 UTC 的 `2026-10-09T09:01:34.221Z` 在中国时区显示为 `2026-10-09 17:01:34（本地时间）`。CLI、MCP 与文本导出使用相同格式；JSON 保留机器可读时间，输入正文不改写。
+
+这里展示的是适配器从本地历史解析出来的用户消息，不是项目笔记，也不是 AI 总结。编号不包含助手或工具消息；缺失、已删除或未保存的历史无法恢复，解析器可能过滤宿主注入的系统内容，因此不等同于原始日志的无损副本。可先用 `ass list` 查找引用，推荐使用 `agent:完整ID`。
+
 ## 交接摘要的预算
 
 摘要最终是要**塞进下一个 agent 的对话**的 —— 所以它不能无脑长。`ass brief` / `session_handoff`
@@ -319,8 +337,7 @@ ass detect --write    # 把「可接入」的写进配置文件（本机继续 /
   图片附件也能捞出来），读不到会告诉你原因，不会假装支持；
 - Kiro / Trae / Windsurf 这类**需要你自己配置**（见下），你告诉它数据在哪、字段怎么取，它就能用。
 
-**接 MCP**：`ass install` 只写**用户级**配置，而 Cursor 这类没有用户级全局 MCP 文件，
-所以它默认接不上。用 `ass mcp` 处理：
+**接 MCP**：`ass install` 写入**用户级**配置，包括 Cursor。需要项目级配置或手工接入时，用 `ass mcp`：
 
 ```bash
 ass mcp                    # 打印配置内容 + 该放到哪个文件（Trae 这类手工贴的用）
@@ -454,6 +471,7 @@ ass list [选项]           列出会话（--all 跨仓库，--agent claude，--
 ass show <引用>           看某个会话（--full 全部，--tail 6 最后 N 条）
 ass search <关键词>       在最近会话正文里全文搜索（--all，--scan 60）
 
+ass inputs <引用>        所有用户输入全文（--round N / --raw / --out 文件 / --json）
 ass last [引用]           把最后一问原样搬过来（--rounds 3，含图片落盘）
 ass brief [引用]          生成交接摘要 Markdown（--out 文件.md；--guess 附上猜测内容，默认关）
                           --budget tiny|small|standard|large|full  按目标 agent 的上下文预算裁剪
@@ -478,7 +496,7 @@ ass task done <任务>     标记完成（再执行一次 = 重新打开）
 ass install              接入 MCP + 全局规则（--dry-run 只看不改）
 ass rules                打印规则原文（Cursor/Trae 要手工贴的用）
 ass mcp                  打印 MCP 配置内容 + 该放哪；--write 在当前工程自动创建
-                         （Cursor 这类没有用户级全局 MCP 文件的，只能走项目级）
+                         （按需写入项目配置，方便团队共享）
 ass uninstall            摘掉 MCP + 规则（不动会话数据）
 ass init [目录]          项目级规则注入（--dry-run / --undo）
 ass detect               自检索：扫盘找出本机所有可能的 agent（--write 写入配置草案）
@@ -496,6 +514,7 @@ ass doctor               自检
 | `session_list` | 列出这个仓库跨 agent 的最近会话 |
 | `session_handoff` | 生成交接摘要（推荐的导入方式） |
 | `session_read` | `summary` / `tail` / `full` 读原始对话 |
+| `session_inputs` | 按顺序查看所有用户输入全文，或指定一条 |
 | `session_last` | 把上一问（含图片）原样搬到当前 agent |
 | `session_search` | 跨会话全文搜索 |
 | `session_note` | 保存交接摘要（收尾时用） |
@@ -575,9 +594,9 @@ src/cli.ts          命令行          src/mcp.ts   MCP server
 - [x] **P0** 决策/踩坑通道：`session_remember` + `ass context`（置顶进交接摘要）
 - [x] **P4** 规则块重写：加上「干活过程中随手记」「收尾落状态」的纪律
 - [x] **P1** 「任务/工作流」：把跨 agent 的多次会话绑成一个任务，`ass resume <任务>`
-- [ ] **P2** 退场钩子：`ass hook install`，收尾自动落 note（不靠 agent 自觉）
+- [x] **P2** 自动交接：Claude Code / Cursor 原生钩子、通用入口、状态与重试
 - [x] **M5a** npm 打包与发布（0.3.0 已发布）
-- [ ] **M5b** CI 自动类型检查、回归测试及打包验证
+- [x] **M5b** CI 工作流：类型检查、回归测试及打包验证
 - [ ] 待摸清：Trae / Windsurf / VS Code Copilot Chat 的存储结构（`ass detect` 已能找到库文件）
 
 ## License
@@ -658,4 +677,57 @@ MCP `session_remember` 提供同名参数 `suggestion`、`confirm`、`review`、
 - CLI `ass context` 和 MCP `session_remember` 的“新增 + 状态更新”在同一事务中校验；失败不保存任何部分笔记。`ass context ... --json` 成功时只向标准输出写一个 JSON 对象，错误通过标准错误和非零退出码报告。
 - 笔记、任务修改和交接索引更新使用跨进程锁；数据通过同目录临时文件替换，避免读到写入一半的 JSON。收尾文件使用唯一编号，避免同一秒保存时覆盖。
 - 无法解析的持久化数据会明确报错，不会当空记录覆盖。崩溃可能遗留 `.lock` 目录；超时信息会提供路径。先检查其中的 `owner.json` 并确认写入进程已退出，再移除遗留锁重试。不要删除仍在使用的锁。
-- 升级后请重启所有连接本工具的 MCP 客户端，避免新旧进程同时写入。旧版本不认识新目录和锁，不支持与 0.3.1 混合写入。此版本未加入自动收尾钩子或 CI，这两项仍在路线图中。
+- 升级后请重启所有连接本工具的 MCP 客户端，避免新旧进程同时写入。旧版本不认识新目录和锁，不支持与 0.3.1 混合写入。从 0.4.0 起提供自动交接钩子和 CI 工作流。
+
+## 自动交接（0.4.0）
+
+启用后，agent 每轮回复结束或会话结束时会自动保存交接快照。你换到新 agent 后，现有的 `ass` / `session_status` 会展示最新交接；不需要旧 agent 记得主动调用 `session_note`。这不是自动开始下一项工作，也不会自动勾掉待办、确认授权或创建任务。
+
+### 安装与查看
+
+```bash
+# 查看将修改的配置；默认检查 Claude Code 和 Cursor 的已有配置目录
+ass hook install --dry-run
+# 只给一个工具安装
+ass hook install --agent claude
+ass hook install --agent cursor
+# 查看安装状态及最近保存/去重/失败记录
+ass hook status
+ass hook status --json
+# 卸载本工具钩子，保留其他钩子与已保存的交接
+ass hook uninstall --agent claude
+```
+
+- Claude Code：用户级 `~/.claude/settings.json` 的 `Stop` 和 `SessionEnd`。
+- Cursor：用户级 `~/.cursor/hooks.json` 的 `stop` 和 `sessionEnd`。
+- macOS/Linux 支持自动安装。配置合并前备份，重复安装不重复添加；缺少 agent 配置目录时跳过。`ass install` 不会隐式开启钩子。升级或移动本工具后应重新运行 `ass hook install`，并按主机提示重新加载设置。
+- 原生事件规范：[Claude Code Hooks](https://code.claude.com/docs/en/hooks)、[Cursor Hooks](https://cursor.com/docs/hooks)。30 秒钩子超时用于给本地归档留出时间；主机终止进程、崩溃或强制退出可能使钩子无法运行，因此同时在轮次结束时保存。
+
+### 保存规则与失败恢复
+
+只使用事件中的**完整会话 ID**，并核对已有会话数据中的仓库；不会选“最近的会话”，也不会按输入的 `transcript_path` 任意读取文件。Cursor 优先使用 `conversation_id`。会话必须能被当前适配器读取；仅仅接入 MCP 不等于支持历史解析。
+
+保存的是本地规则生成的交接摘要和现有项目笔记，不调用大模型或发送网络请求，不修改原始会话。相同会话内容与笔记重复触发时跳过；内容变化后生成新快照，原有快照保留。自动交接状态存于工具数据目录的 `hooks/state.json`，最近结果最多保留 50 条。
+
+会话尚未落盘、输入错误、路径不匹配或无法写入时，标准错误会显示原因，`ass hook status` 可查看记录。钩子只返回空 JSON，不请求 AI 再回答一轮；失败返回非零退出码，最终行为由主机控制。
+
+```bash
+# 用 status 中的完整来源引用替换下面示例；可在会话落盘后重试
+ass hook retry --session claude:完整会话ID
+```
+
+如果主机在日志写入前终止了进程，状态中可能没有该次失败，请同时查看主机钩子日志。遗留数据锁按 0.3.1 的锁恢复指引处理。
+
+### 其他工具的通用接入
+
+当前不自动修改其他工具的生命周期配置。已有会话适配器的工具可在自己的回调中启动 `ass hook run --agent <agent>`，并通过 stdin 传入 JSON：
+
+```json
+{"session_id":"完整会话ID","cwd":"/绝对路径/项目","hook_event_name":"manual"}
+```
+
+这需要主机或你自己的脚本提供回调；不能把“有通用入口”理解为所有 agent 都已自动接入。Windows 可使用通用入口手工配置命令。
+
+### CI
+
+GitHub Actions 在 push、pull request 或手动触发时运行 Linux/macOS × Node 18/22/24 的类型检查、回归测试与 npm 打包检查，不自动发布 npm。工作流见 `.github/workflows/ci.yml`，实际云端结果以 GitHub Actions 为准。

@@ -2,7 +2,7 @@ import path from 'node:path'
 import type { Adapter, ListOptions, ReadOptions, SessionMeta, Turn } from '../types'
 import { CACHE_DIR, loadConfig, type Config } from '../config'
 import { buildAdapters } from '../adapters/registry'
-import { errMsg, gitRoot, plain, readJsonFile, realpath, sameRepo, writeJsonFile } from '../util'
+import { fmtTime, errMsg, gitRoot, plain, readJsonFile, realpath, sameRepo, writeJsonFile } from '../util'
 
 const CACHE_FILE = path.join(CACHE_DIR, 'index.json')
 const CACHE_VERSION = 2
@@ -196,6 +196,6 @@ export function readSession(found: FoundSession, opts: ReadOptions = {}): Turn[]
 }
 
 export function describeSession(s: SessionMeta): string {
-  const when = s.updatedAt ? new Date(s.updatedAt).toISOString().slice(0, 16).replace('T', ' ') : '—'
+  const when = fmtTime(s.updatedAt)
   return `${s.agent}:${s.id.slice(0, 8)}  ${when}  ${plain(s.title, 60)}`
 }

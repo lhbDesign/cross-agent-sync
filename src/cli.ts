@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
+import { sessionInputs, inputsMarkdown } from './core/inputs'
+import { configureHooks, hookStatus, runHook, recordHookFailure, readHookInput, type HookAgent } from './hooks'
 import path from 'node:path'
 import process from 'node:process'
 import type { SessionMeta, Turn } from './types'
@@ -65,7 +67,7 @@ interface Args {
 }
 
 const VALUE_FLAGS = [
-  'repo', 'limit', 'agent', 'rounds', 'tail', 'since', 'out', 'summary', 'files', 'scan',
+  'repo', 'limit', 'agent', 'round', 'rounds', 'tail', 'since', 'out', 'summary', 'files', 'scan',
   'decision', 'decide', 'dead-end', 'deadend', 'constraint', 'todo', 'note', 'done', 'remove',
   'label', 'goal', 'budget', 'tokens', 'session', 'suggestion', 'confirm', 'review', 'result', 'evidence', 'related-to', 'supersedes', 'cancel', 'reopen',
 ]
@@ -398,6 +400,29 @@ function cmdShow(args: Args, cfg: Config): void {
   }
 }
 
+function cmdInputs(args: Args, cfg: Config): void {
+  const ref = args.positional[0]
+  if (!ref) throw new Error('请提供会话引用，例如 ass inputs claude:完整会话ID')
+  if (args.flags.raw && (args.flags.round === undefined || args.flags.json)) {
+    throw new Error('--raw 需要 --round <编号>，且不能与 --json 同用。')
+  }
+  if (args.flags.out !== undefined && typeof args.flags.out !== 'string') throw new Error('--out 需要文件路径。')
+  const found = findSession(ref, cfg)
+  if (!found) throw new Error(`没找到会话：${ref}`)
+  const round = args.flags.round === undefined ? undefined : Number(args.flags.round)
+  if (typeof args.flags.round === 'boolean') throw new Error('--round 需要输入编号。')
+  const result = sessionInputs(readSession(found), round)
+  const output = args.flags.json
+    ? JSON.stringify({ session: found.meta.key, ...result }, null, 2)
+    : args.flags.raw ? result.inputs[0]!.text : inputsMarkdown(found.meta.key, result)
+  if (args.flags.out) {
+    justWrite(String(args.flags.out), output, 'ass inputs --out')
+    console.log(`已导出 ${result.inputs.length} 条用户输入：${args.flags.out}`)
+  } else {
+    process.stdout.write(output)
+  }
+}
+
 /** R3：把「另一个 agent 里的那一问」原样搬过来（含图片落盘） */
 function cmdLast(args: Args, cfg: Config): void {
   const found = locate(args.positional[0], cfg)
@@ -546,6 +571,61 @@ function cmdContext(args: Args, cfg: Config): void {
   if (unconfirmed) console.log(c.dim(`已有用户授权时记录：ass context --confirm ${unconfirmed.id} --evidence "用户授权原话"`))
   console.log(c.dim(`删除记录：ass context --remove ${ctx.entries[0]!.id}    包含已完成、取消及被替代记录：ass context --all`))
   console.log(c.dim('找回原始提问：ass last <会话引用>    阅读完整对话：ass show <会话引用> --full'))
+}
+
+async function cmdHook(args: Args, cfg: Config): Promise<void> {
+  const action = args.positional[0] || 'status'
+  if (action === 'run') {
+    const agent = typeof args.flags.agent === 'string' ? args.flags.agent : ''
+    let input: any
+    try {
+      if (!agent) throw new Error('hook run 需要 --agent')
+      input = await readHookInput()
+      const result = runHook(agent, input, cfg)
+      // Hook stdout is protocol output, not human progress text. Never request another turn.
+      console.log('{}')
+      console.error(`[ass hook] ${result.status}: ${result.file}`)
+    } catch (error) {
+      try { recordHookFailure(agent || 'unknown', error, { session: typeof (input?.conversation_id ?? input?.session_id) === 'string' ? `${agent}:${input.conversation_id ?? input.session_id}` : undefined, event: typeof input?.hook_event_name === 'string' ? input.hook_event_name : undefined }) } catch (diagnosticError) { console.error(`无法保存 hook 诊断：${String(diagnosticError)}`) }
+      console.error(`[ass hook] ${error instanceof Error ? error.message : String(error)}`)
+      console.log('{}')
+      process.exitCode = 1
+    }
+    return
+  }
+  if (action === 'retry') {
+    const ref = typeof args.flags.session === 'string' ? args.flags.session : ''
+    const match = /^([a-z0-9_-]+):(.+)$/i.exec(ref)
+    if (!match) throw new Error('重试需要完整引用：ass hook retry --session agent:完整会话ID')
+    try {
+      const result = runHook(match[1]!, { session_id: match[2], hook_event_name: 'manual' }, cfg)
+      console.log(args.flags.json ? JSON.stringify(result, null, 2) : `${result.status} · ${result.file}`)
+    } catch (error) {
+      try { recordHookFailure(match[1]!, error, { session: ref, event: 'manual' }) } catch { /* main reports original error */ }
+      throw error
+    }
+    return
+  }
+  if (action === 'status') {
+    const status = hookStatus()
+    if (args.flags.json) console.log(JSON.stringify(status, null, 2))
+    else {
+      console.log('自动交接钩子')
+      for (const c of status.configs) console.log(`  ${c.agent}: ${c.installed ? '已配置' : '未完整配置'} · ${c.file}${'error' in c ? ' · ' + c.error : ''}`)
+      console.log(`最近执行（最多 50 次）：${status.stateFile}`)
+      for (const r of status.recent.slice(-10)) console.log(`  ${fmtTime(r.at)} ${r.agent} ${r.status} ${r.session || ''} ${r.error || r.file || ''}`)
+      console.log('安装预览：ass hook install --agent claude --dry-run（也支持 cursor）；卸载：ass hook uninstall --agent claude')
+      console.log('失败重试：ass hook retry --session agent:完整会话ID')
+    }
+    return
+  }
+  if (action !== 'install' && action !== 'uninstall') throw new Error('用法：ass hook install|uninstall|status|run|retry')
+  const requested = args.flags.agent
+  if (requested !== undefined && requested !== 'claude' && requested !== 'cursor') throw new Error('自动安装支持 --agent claude 或 cursor；其他 agent 可手工接入 hook run')
+  const agents: HookAgent[] = requested ? [requested as HookAgent] : ['claude', 'cursor']
+  const results = agents.map(agent => configureHooks(agent, action, Boolean(args.flags['dry-run'])))
+  if (args.flags.json) console.log(JSON.stringify(results, null, 2))
+  else for (const r of results) console.log(`${r.agent}: ${r.action} · ${r.file}${'backup' in r && r.backup ? ' · 备份 ' + r.backup : ''}`)
 }
 
 // ---------------------------------------------------------------- 任务
@@ -1104,6 +1184,7 @@ ${c.bold('看历史')}
   ass search <关键词>       在最近会话正文里全文搜索（--all 跨仓库，--scan 60）
 
 ${c.bold('搬上下文')}
+  ass inputs <引用>        所有用户输入全文（--round 3 选一条；--raw 纯正文；--out 文件；--json）
   ass last [引用]           把最后一问原样搬过来（--rounds 3 连问多轮，含图片落盘）
   ass brief [引用]          生成交接摘要 Markdown（--out 文件.md，--tail 4，--files 25）
                           --guess 额外附上「从对话里猜的决策/踩坑」（默认关，不准）
@@ -1130,10 +1211,15 @@ ${c.bold('工作任务')}（把跨 agent 的多段会话绑成一件事）
   ass task done <任务>     标记完成（再执行一次 = 重新打开）
 
 ${c.bold('接入 / 维护')}
+  ass hook install         安装自动交接（--agent claude|cursor，--dry-run）
+  ass hook uninstall       卸载本工具钩子，保留其他配置
+  ass hook status          查看配置及最近执行结果（--json）
+  ass hook retry --session agent:id  按完整会话引用重试保存
+  ass hook run --agent X   从 stdin 接收 JSON，按完整会话 ID 保存交接
   ass install              把 MCP + 规则写进本机各 agent（--dry-run 只看不改）
   ass rules                打印规则原文（Cursor/Trae 这些要手工贴的用）
   ass mcp                  打印 MCP 配置内容 + 该放到哪；--write 在当前工程自动创建
-                           （Cursor 这类没有用户级全局 MCP 文件的，只能走项目级）
+                           （按需写入项目配置，方便团队共享）
                            --write --dry-run 只看不改，--write --undo 撤销
   ass uninstall            摘掉 MCP + 规则（不动你的会话数据）
   ass init [目录]          项目级注入规则（--dry-run / --undo）
@@ -1151,7 +1237,7 @@ ${c.bold('引用')}
 `)
 }
 
-function main(): void {
+async function main(): Promise<void> {
   maybeReexec()
   const argv = process.argv.slice(2)
   if (argv.includes('--help') || argv.includes('-h') || argv[0] === 'help') return usage()
@@ -1169,6 +1255,8 @@ function main(): void {
     /* 边界拿不到不该让命令跑不起来 */
   }
   switch (args.cmd) {
+    case 'hook':
+      return cmdHook(args, cfg)
     case 'status':
       return cmdStatus(args, cfg)
     case 'list':
@@ -1176,6 +1264,8 @@ function main(): void {
       return cmdList(args, cfg)
     case 'show':
       return cmdShow(args, cfg)
+    case 'inputs':
+      return cmdInputs(args, cfg)
     case 'last':
       return cmdLast(args, cfg)
     case 'brief':
@@ -1221,7 +1311,7 @@ function main(): void {
 }
 
 try {
-  main()
+  await main()
 } catch (e) {
   console.error(c.yellow(`出错了：${e instanceof Error ? e.message : String(e)}`))
   process.exitCode = 1

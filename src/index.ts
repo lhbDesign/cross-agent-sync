@@ -150,3 +150,8 @@ export {
 } from './install'
 
 export { cleanUserText, dispWidth, gitRoot, isInjected, parseDataUrl, plain, projectName, sameRepo, truncWidth } from './util'
+
+export { configureHooks, hookStatus, runHook, recordHookFailure } from './hooks'
+export type { HookAgent, HookResult } from './hooks'
+
+export { sessionInputs, inputsMarkdown } from './core/inputs'

@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-13
+
+### 新增
+
+- **逐条查看用户输入**：`ass inputs <引用>` / MCP `session_inputs` 按顺序展示所有可读取的用户输入全文，不含 AI 回复、不做摘要截断；支持 `--round N` 选条、`--raw` 纯正文复制、`--out` 导出和 `--json`。图片数量与文件附件独立标明，缺失历史不推测补写。
+- **自动交接**：`ass hook install` 为 Claude Code（Stop / SessionEnd）和 Cursor（stop / sessionEnd）安装用户级钩子；支持按 agent 选择、dry-run、备份、幂等合并与精准卸载。自动安装支持 macOS/Linux，不会随 `ass install` 隐式启用。
+- **精确保存与去重**：只处理事件中的完整会话 ID，核对来源仓库；按会话内容和项目笔记指纹去重，变化后保存新快照。使用现有本地摘要逻辑，不调用模型、不修改原始会话、不自动授权或完成待办。
+- **诊断与恢复**：`ass hook status [--json]` 展示配置和最近 50 次结果；`ass hook retry --session agent:完整ID` 重试。输入大小与等待时间受限，错误输出到 stderr 并记录诊断；不返回要求 agent 再执行一轮的指令。
+- **通用入口**：`ass hook run --agent <agent>` 接收 stdin JSON，供其他工具的生命周期回调手工接入，要求已有可用的会话解析器。
+- **CI**：新增 GitHub Actions，Linux/macOS × Node 18/22/24 执行类型检查、回归测试和打包验证，不自动发布。
+
+### 修复
+
+- 用户输入时间改为本地 `YYYY-MM-DD HH:mm:ss`，CLI/MCP/文本导出保持一致；会话描述改用统一的本地时间格式，交接摘要复用相同格式化逻辑，并对无效时间显示占位符。JSON 与内部存储保留机器可读时间。
+
+### 使用说明
+
+- 升级到 0.4.0 后重启 MCP 客户端以加载 `session_inputs` 等新增能力；已安装自动交接钩子的用户应重新运行 `ass hook install` 更新命令路径。
+- 开发与升级不会自动给用户的 agent 开启钩子。显式执行 `ass hook install --dry-run` 查看配置，再安装并按主机要求重新加载。
+- 强制退出或主机超时可能阻止退出事件执行；轮次结束快照用于提前保存。历史尚未落盘或适配器不可读时明确报错，可在落盘后重试；不将通用入口宣称为所有 agent 的原生自动支持。
+- 原生主机的真实触发行为需在用户环境验证；本版本提供协议输入、生成命令、配置合并与保存流程的自动化测试。
+
 ## [0.3.1] — 2026-10-12
 
 ### 修复
@@ -95,6 +117,7 @@
 
   实现上要多取一条来探测：`listSessions` 返回的数组本身已经被截断过，
   只看它无从判断到底是刚好 15 个还是被砍过。没到上限时这行不出现（否则每次都在喊狼来了）。
+
 - **交接预算：摘要按目标 agent 的上下文自适应裁剪**（`ass brief --budget` / `session_handoff`）。
   `buildBrief` 里原本到处是拍脑袋的硬编码截断（原始目标 600 字、时间线每条 220 字最多 40 条、
   最后一轮 4000 字…），既不随会话规模变化，也不知道下一个 agent 还剩多少上下文。
@@ -242,7 +265,8 @@
 - Gemini CLI 的会话记录里没有仓库路径，只能通过 `ass list --all` 看到，无法按仓库过滤。
 - Trae / Windsurf / VS Code Copilot Chat 的存储结构还没摸清，`ass detect` 能找到库文件但不解析。
 
-[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.1...v0.2.2

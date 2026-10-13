@@ -1,5 +1,5 @@
 import type { SessionMeta, Turn } from '../types'
-import { plain, truncate } from '../util'
+import { fmtTime, plain, truncate } from '../util'
 import { contextMarkdown } from './context'
 import {
   DEFAULT_LEVEL,
@@ -398,14 +398,7 @@ export function buildBrief(meta: SessionMeta, turns: Turn[], opts: BriefOptions 
 
 
 function fmtRange(meta: SessionMeta): string {
-  // 避免循环依赖，这里直接内联一份最小实现
-  const f = (ms: number | null): string => {
-    if (!ms) return '—'
-    const d = new Date(ms)
-    const p = (n: number): string => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-  }
-  return `${f(meta.startedAt)} → ${f(meta.updatedAt)}`
+  return `${fmtTime(meta.startedAt)} → ${fmtTime(meta.updatedAt)}`
 }
 
 /** 一屏概览（MCP 的 session_read mode=summary 用） */

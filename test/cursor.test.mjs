@@ -93,3 +93,14 @@ test('cursor：没有 cwd 的会话不该混进任何仓库的列表，有 cwd �
   const other = api.listSessions({ repo: projJson }, cfg)
   assert.deepEqual(other.sessions.map((s) => s.id), [A], '两个仓库各归各的')
 })
+
+test('Cursor 自动交接优先 conversation_id，兼容独立 session_id，原始数据库不变', { skip: !hasSqlite && '本机没有 sqlite3' }, () => {
+  const before = fs.readFileSync(dbFile)
+  const result = api.runHook('cursor', { session_id: 'run-identifier', conversation_id: A, workspace_roots: [projJson], hook_event_name: 'stop' }, cfg)
+  assert.equal(result.status, 'saved')
+  assert.equal(result.session, `cursor:${A}`)
+  assert.match(fs.readFileSync(result.file, 'utf8'), /你好/)
+  const repeat = api.runHook('cursor', { conversation_id: A, workspace_roots: [projJson], hook_event_name: 'sessionEnd' }, cfg)
+  assert.equal(repeat.status, 'unchanged')
+  assert.deepEqual(fs.readFileSync(dbFile), before)
+})

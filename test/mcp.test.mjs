@@ -132,3 +132,18 @@ test('MCP：新增与无效核对合并请求失败时，不留下部分笔记',
   assert.doesNotMatch(textOf(result.find(r => r.id === 3)), /不能残留/)
   assert.match(textOf(result.find(r => r.id === 4)), /已确认授权 c1/)
 })
+
+test('MCP：用户输入全文工具与单条编号校验', async () => {
+  const res = await rpc([init,
+    call(2, 'session_inputs', { session: 'claude:ffff-5555' }),
+    call(3, 'session_inputs', { session: 'claude:ffff-5555', round: 1 }),
+    call(4, 'session_inputs', { session: 'claude:ffff-5555', round: 2 }),
+    call(5, 'session_inputs', {}),
+  ])
+  assert.match(textOf(res[1]), /第 1 条输入/)
+  assert.match(textOf(res[1]), /把登录页的验证码换成滑块/)
+  assert.match(textOf(res[1]), /1 张图片/)
+  assert.equal(textOf(res[1]), textOf(res[2]))
+  assert.equal(res[3].result.isError, true)
+  assert.equal(res[4].result.isError, true)
+})

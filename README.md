@@ -98,6 +98,24 @@ ass task add cross-agent-sync-dev claude:4134ec80
 
 ---
 
+## View every user input (0.4.0)
+
+Use a session ID to read all user inputs in recorded order, numbered and unabridged, without assistant replies or summarization.
+
+```bash
+ass inputs claude:4134ec80                 # all user inputs
+ass inputs claude:4134ec80 --round 3       # input number 3
+ass inputs claude:4134ec80 --round 3 --raw # body only, for copying
+ass inputs claude:4134ec80 --out inputs.md # export all inputs
+ass inputs claude:4134ec80 --json          # structured data, including attachments
+```
+
+MCP: `session_inputs` accepts `session` and optional `round`. `--raw` requires `--round` and returns only that input's parsed text, without headers, attachment descriptions or an added newline; combine with `--out` to save it. Default output reports image counts and available file attachment text; it does not transcribe or export images.
+
+Timestamps use the local time zone of the computer running the tool, in `YYYY-MM-DD HH:mm:ss` format with a local-time label. For example, `2026-10-09T09:01:34.221Z` appears as `2026-10-09 17:01:34` in China Standard Time. CLI, MCP and text exports share this format; JSON retains machine-readable timestamps and input bodies are unchanged.
+
+Numbering counts readable user messages, excluding assistant and tool messages. Text comes from local adapter parsing, not project notes or an AI summary. Missing or deleted history cannot be recovered; adapters may remove host-injected system content, so this is not a lossless raw-log export. Find references with `ass list`; prefer `agent:full-id`.
+
 ## Handoff brief budget
 
 The brief ends up **inside the next agent’s conversation**, so it cannot grow without bound.
@@ -329,8 +347,8 @@ This tool’s stance:
   if it cannot read, it explains why instead of pretending;
 - Kiro / Trae / Windsurf need **your config** (below): tell it where data lives and how to map fields.
 
-**MCP wiring**: `ass install` only writes **user-level** config. Cursor-like tools often have no
-user-global MCP file, so they may not connect by default. Use `ass mcp`:
+**MCP wiring**: `ass install` writes **user-level** config, including Cursor.
+For project-level configuration or manual setup, use `ass mcp`:
 
 ```bash
 ass mcp                    # print config + where to put it (for Trae-style manual paste)
@@ -463,6 +481,7 @@ ass list [options]       List sessions (--all across repos, --agent claude, --li
 ass show <ref>           Inspect a session (--full all, --tail 6 last N)
 ass search <query>       Full-text search in recent session bodies (--all, --scan 60)
 
+ass inputs <ref>        All user inputs (--round N / --raw / --out file / --json)
 ass last [ref]           Port the last question as-is (--rounds 3, images on disk)
 ass brief [ref]          Handoff brief Markdown (--out file.md; --guess adds guessed content, off by default)
                           --budget tiny|small|standard|large|full  trim to target agent context budget
@@ -505,6 +524,7 @@ ass doctor               Self-check
 | `session_list` | Recent sessions for this repo across agents |
 | `session_handoff` | Build handoff brief (recommended import path) |
 | `session_read` | `summary` / `tail` / `full` raw dialogue |
+| `session_inputs` | Read all user inputs in order, or select one by number |
 | `session_last` | Port the previous question (incl. images) into the current agent |
 | `session_search` | Cross-session full-text search |
 | `session_note` | Save handoff brief (wrap-up) |
@@ -584,9 +604,9 @@ src/cli.ts          CLI          src/mcp.ts   MCP server
 - [x] **P0** Decision / dead-end channel: `session_remember` + `ass context` (pinned into handoff briefs)
 - [x] **P4** Rule-block rewrite: discipline for “jot while working” and “wrap-up state”
 - [x] **P1** Task / workflow: bind multi-agent sessions into one task, `ass resume <task>`
-- [ ] **P2** Exit hooks: `ass hook install`, auto-note on wrap-up (not relying on agent diligence)
+- [x] **P2** Automatic handoff: Claude Code / Cursor native hooks, generic runner, status and retry
 - [x] **M5a** npm package & publish (0.3.0 shipped)
-- [ ] **M5b** CI: typecheck, regression tests, package verification
+- [x] **M5b** CI workflow: typecheck, regression tests, package verification
 - [ ] TBD: Trae / Windsurf / VS Code Copilot Chat storage layouts (`ass detect` already finds DB files)
 
 ## License
@@ -679,4 +699,43 @@ Already-installed agents need updated sync rules and an MCP reload to pick up th
 - CLI `ass context` and MCP `session_remember` “add + status update” validate in one transaction; failure saves no partial notes. On success, `ass context ... --json` writes one JSON object to stdout; errors go to stderr with a non-zero exit code.
 - Notes, task edits, and handoff index updates use a cross-process lock; data is replaced via a same-directory temp file so readers never see half-written JSON. Wrap-up files use unique numbers so same-second saves do not overwrite.
 - Unparseable persisted data errors clearly instead of being treated as empty and overwritten. Crashes may leave `.lock` dirs; the timeout message includes the path. Check `owner.json` inside and confirm the writer has exited before removing a stale lock. Do not delete a lock still in use.
-- After upgrading, restart every MCP client connected to this tool so old and new processes do not write together. Older versions do not understand the new dirs and locks and must not share writes with 0.3.1. This release still has no auto wrap-up hook or CI — those remain on the roadmap.
+- After upgrading, restart every MCP client connected to this tool so old and new processes do not write together. Older versions do not understand the new dirs and locks and must not share writes with 0.3.1. Automatic handoff hooks and a CI workflow are available starting with 0.4.0.
+
+## Automatic handoff (0.4.0)
+
+Opt-in hooks save a handoff snapshot after a response or when the session ends. Existing `ass` / `session_status` views expose the latest handoff to the next agent. They do not start work, approve suggestions, complete todos, or create tasks.
+
+```bash
+ass hook install --dry-run
+ass hook install --agent claude
+ass hook install --agent cursor
+ass hook status
+ass hook status --json
+ass hook uninstall --agent claude
+```
+
+Native installers support macOS/Linux and merge user-level configuration with backups: Claude Code `~/.claude/settings.json` (`Stop`, `SessionEnd`) and Cursor `~/.cursor/hooks.json` (`stop`, `sessionEnd`). Existing handlers are preserved; installs are idempotent and missing agent directories are skipped. `ass install` does not enable hooks implicitly. Reinstall hooks after moving/upgrading this package and reload settings as required by the host.
+
+The native contracts are documented in [Claude Code Hooks](https://code.claude.com/docs/en/hooks) and [Cursor Hooks](https://cursor.com/docs/hooks). Installed handlers have a 30-second timeout. Forced termination may prevent exit hooks, so turn-end snapshots provide an earlier checkpoint.
+
+The runner requires the exact session ID and validates the repository against the existing adapter. Cursor uses `conversation_id` when present. It never chooses the most recent session or reads arbitrary `transcript_path` payloads. The adapter must already support the source history; MCP connectivity alone is insufficient.
+
+Snapshots use the existing local heuristic brief and project notes, with no model call, network request, or modification to source sessions. Repeated identical content is deduplicated. Changes create new snapshots. Diagnostics live in `hooks/state.json` under the tool data directory; the last 50 results are retained.
+
+Use `ass hook status` to inspect failures, then retry once history is available:
+
+```bash
+ass hook retry --session claude:full-session-id
+```
+
+Hook stdout is empty JSON and never asks the agent to continue a turn. Errors use stderr and a nonzero exit code; host behavior is host-controlled. If the host kills the process before diagnostics are written, inspect host logs too. See the 0.3.1 lock recovery instructions for crash leftovers.
+
+Other tools (or Windows integrations) can explicitly wire their own lifecycle callback to `ass hook run --agent <agent>`, sending JSON on stdin:
+
+```json
+{"session_id":"full-session-id","cwd":"/absolute/project/path","hook_event_name":"manual"}
+```
+
+This generic entry point is not an automatic installation for every agent. A host callback and a working history adapter are required.
+
+CI at `.github/workflows/ci.yml` runs typecheck, regression tests, and npm package checks on Linux/macOS with Node 18/22/24 for pushes, pull requests, and manual runs. It does not publish. Actual hosted results are reported by GitHub Actions.
