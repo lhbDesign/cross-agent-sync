@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionMeta, Turn } from '../types'
-import { HOME, cleanUserText, gitRoot, isDir, isInjected, plain, projectName, readJsonl, readJsonlTail, statOf } from '../util'
+import { HOME, cleanUserText, gitRoot, isDir, isInjected, plain, projectName, readJsonFile, readJsonl, readJsonlTail, statOf } from '../util'
+import { sessionTitle } from './title'
 
 /**
  * Claude Code：~/.claude/projects/<cwd-slug>/<uuid>.jsonl
@@ -54,6 +55,7 @@ function parseFile(file: string): SessionMeta {
   let cwd: string | null = null
   let branch: string | null = null
   let title: string | null = null
+  let customTitle = ''
   let model: string | null = null
   let startedAt: number | null = null
   let firstUser: string | null = null
@@ -65,7 +67,10 @@ function parseFile(file: string): SessionMeta {
     if (!cwd && typeof rec.cwd === 'string') cwd = rec.cwd
     if (!branch && typeof rec.gitBranch === 'string') branch = rec.gitBranch
     if (!startedAt && rec.timestamp) startedAt = Date.parse(rec.timestamp) || null
-    if (rec.type === 'ai-title' && rec.aiTitle && !title) title = String(rec.aiTitle)
+    if (!rec.sessionId || rec.sessionId === sessionId) {
+      if (rec.type === 'ai-title' && sessionTitle(rec.aiTitle)) title = sessionTitle(rec.aiTitle)
+      if (rec.type === 'custom-title' && sessionTitle(rec.customTitle)) customTitle = sessionTitle(rec.customTitle)
+    }
     if (rec.type === 'assistant' && !model && rec.message?.model) model = String(rec.message.model)
     if (rec.type === 'user' && isHumanUser(rec)) {
       const { text } = userParts(rec.message?.content)
@@ -87,7 +92,7 @@ function parseFile(file: string): SessionMeta {
     agent: 'claude',
     agentLabel: 'Claude Code',
     id: sessionId,
-    title: title || (firstUser ? plain(firstUser, 70) : '(空会话)'),
+    title: customTitle || title || (firstUser ? plain(firstUser, 70) : '(空会话)'),
     preview: plain(lastUser, 140),
     cwd,
     repo,
@@ -100,6 +105,7 @@ function parseFile(file: string): SessionMeta {
     branch,
     source: file,
     size: st ? st.size : 0,
+    extra: { customTitle, aiTitle: title },
   }
 }
 
@@ -116,6 +122,15 @@ function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
   }
   for (const d of dirs) {
     const dir = path.join(ROOT, d.name)
+    const index = readJsonFile<{ entries?: unknown } | null>(path.join(dir, 'sessions-index.json'), null)
+    const names = new Map<string, string>()
+    if (Array.isArray(index?.entries)) {
+      for (const entry of index.entries) {
+        if (!entry || typeof entry.sessionId !== 'string') continue
+        const title = sessionTitle(entry.customTitle) || sessionTitle(entry.summary)
+        if (title) names.set(entry.sessionId, title)
+      }
+    }
     let files: string[] = []
     try {
       files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
@@ -126,11 +141,11 @@ function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
       const full = path.join(dir, f)
       const st = statOf(full)
       if (!st || st.size === 0) continue
-      const stamp = `${Math.round(st.mtimeMs)}:${st.size}`
+      const stamp = `titles-v1:${st.mtimeMs}:${st.size}`
       const hit = prev[full]
       const meta = hit && hit.stamp === stamp ? hit.meta : parseFile(full)
       next[full] = { stamp, meta }
-      out.push(meta)
+      out.push({ ...meta, title: sessionTitle(meta.extra?.customTitle) || sessionTitle(meta.extra?.aiTitle) || names.get(meta.id) || meta.title })
     }
   }
   cache.files = next

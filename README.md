@@ -98,6 +98,14 @@ ass task add cross-agent-sync-dev claude:4134ec80
 
 ---
 
+## Session titles (0.4.1)
+
+Session lists prefer titles saved by the original tool. Codex reads the local state database, then `session_index.jsonl`, then the first user message. Claude Code uses the latest custom title or AI title, then the project session index, then the first user message. Cursor uses the header name, composer-data name, subtitle, or an unnamed placeholder; OpenCode uses its session title or an empty-session placeholder. Custom adapters use the last non-empty string in the mapped title field, in file/query order (use an explicit `ORDER BY` for SQL).
+
+Renames refresh on the next list request, including when only the title index/database changes. Missing or malformed title metadata falls back without hiding the session. Message previews remain separate. All source data stays read-only; saved handoff snapshots and task goals are not rewritten. Restart MCP clients after upgrading.
+
+`ASS_CODEX_INDEX` and `ASS_CODEX_DB` override the title sources. By default they are discovered beside the sessions directory (`CODEX_HOME` or `~/.codex`); with `ASS_CODEX_DIR`, they are discovered in that directory’s parent.
+
 ## View every user input (0.4.0)
 
 Use a session ID to read all user inputs in recorded order, numbered and unabridged, without assistant replies or summarization.

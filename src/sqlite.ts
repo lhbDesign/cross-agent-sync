@@ -109,11 +109,11 @@ export function sqliteBackend(): { backend: 'node:sqlite' | 'sqlite3(cli)' | nul
   }
 }
 
-export function openSqlite(file: string): DbOpenResult {
+export function openSqlite(file: string, scope: 'directory' | 'file' = 'directory'): DbOpenResult {
   if (!exists(file)) return { db: null, backend: null, reason: `文件不存在: ${file}` }
   // 句柄由 node:sqlite / sqlite3 自己持有，我们插不进去 —— 但"读过它"必须登记，
   // 否则 Cursor 的 state.vscdb 所在目录不会进入受保护区（见 core/roguard.ts）。
-  noteSourceRead(file)
+  noteSourceRead(file, scope)
   const mod = getNodeSqlite()
   if (mod?.DatabaseSync) {
     try {

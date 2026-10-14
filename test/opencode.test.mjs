@@ -87,3 +87,14 @@ test('opencode：preview 与 read() 读出来的最后一条用户消息一致',
     assert.equal(meta.preview, expected, `${key} 的 preview 应该和 read() 一致`)
   }
 })
+
+test('OpenCode: native title rename refreshes independently of messages; blank title falls back', { skip }, () => {
+  const get = () => api.opencodeAdapter.list({}, { cache: {} }).find(s => s.id === 'ses_a')
+  execFileSync('sqlite3', [dbFile], { input: "update session set title='重新命名' where id='ses_a';" })
+  const before = fs.readFileSync(dbFile)
+  assert.equal(get().title, '重新命名')
+  assert.equal(get().preview, '最后一句')
+  assert.deepEqual(fs.readFileSync(dbFile), before)
+  execFileSync('sqlite3', [dbFile], { input: "update session set title='  ' where id='ses_a';" })
+  assert.equal(get().title, '(空会话)')
+})

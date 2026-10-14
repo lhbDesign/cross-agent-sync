@@ -93,10 +93,10 @@ export function projectName(p: string | null | undefined): string | null {
  * 句柄一律经 `openSource()` 取得（显式 O_RDONLY + 登记指纹），
  * 使"只读"和"变更自证"在代码里只有一个入口，见 core/roguard.ts。
  */
-export function* readJsonl(file: string): Generator<Record<string, any>> {
+export function* readJsonl(file: string, scope: 'directory' | 'file' = 'directory'): Generator<Record<string, any>> {
   let fd: number | null = null
   try {
-    fd = openSource(file)
+    fd = openSource(file, scope)
     if (fd === null) return
     const buf = Buffer.allocUnsafe(1 << 20)
     let pending = Buffer.alloc(0)

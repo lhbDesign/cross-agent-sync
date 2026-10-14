@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionMeta, Turn } from '../types'
+import { lit, openSqlite } from '../sqlite'
+import { sessionTitle } from './title'
 import { HOME, cleanUserText, exists, gitRoot, isDir, isInjected, parseDataUrl, plain, projectName, readJsonl, readJsonlTail, statOf } from '../util'
 
 /**
@@ -10,8 +12,51 @@ import { HOME, cleanUserText, exists, gitRoot, isDir, isInjected, parseDataUrl, 
  *   { "type": "input_image", "image_url": "data:image/png;base64,..." }
  */
 /** 数据源可用 ASS_CODEX_DIR / ASS_CODEX_ARCHIVED 覆盖 */
-const ROOT = process.env.ASS_CODEX_DIR || path.join(HOME, '.codex', 'sessions')
-const ARCHIVED = process.env.ASS_CODEX_ARCHIVED || path.join(HOME, '.codex', 'archived_sessions')
+const CODEX_HOME = process.env.CODEX_HOME || path.join(HOME, '.codex')
+const ROOT = process.env.ASS_CODEX_DIR || path.join(CODEX_HOME, 'sessions')
+const ARCHIVED = process.env.ASS_CODEX_ARCHIVED || path.join(CODEX_HOME, 'archived_sessions')
+// An overridden transcript directory must not pick up another installation's titles.
+const META_DIR = process.env.ASS_CODEX_DIR ? path.dirname(ROOT) : CODEX_HOME
+const INDEX = process.env.ASS_CODEX_INDEX || path.join(META_DIR, 'session_index.jsonl')
+
+function titles(ids: string[]): Map<string, string> {
+  const out = new Map<string, string>()
+  const wanted = new Set(ids)
+  for (const rec of readJsonl(INDEX, 'file')) {
+    const title = sessionTitle(rec.thread_name)
+    if (wanted.has(rec.id) && title) out.set(rec.id, title)
+  }
+  let databases: string[] = []
+  if (process.env.ASS_CODEX_DB) databases = [process.env.ASS_CODEX_DB]
+  else {
+    try {
+      databases = fs.readdirSync(META_DIR).filter((f) => /^state_\d+\.sqlite$/.test(f))
+        .sort((a, b) => Number(b.match(/\d+/)?.[0]) - Number(a.match(/\d+/)?.[0]))
+        .map((f) => path.join(META_DIR, f))
+    } catch { /* index or first message remains usable */ }
+  }
+  // Current state is authoritative; the append-only index is the fallback.
+  for (const file of databases) {
+    // Metadata lives next to writable Codex configuration; protect the file, not CODEX_HOME.
+    const { db } = openSqlite(file, 'file')
+    if (!db) continue
+    try {
+      const found = new Map<string, string>()
+      for (let i = 0; i < ids.length; i += 200) {
+        for (const row of db.query<{ id: string; title: unknown }>(
+          `select id, title from threads where id in (${ids.slice(i, i + 200).map(lit).join(',')})`,
+        )) {
+          const title = sessionTitle(row.title)
+          if (title) found.set(row.id, title)
+        }
+      }
+      for (const [id, title] of found) out.set(id, title)
+      break
+    } catch { /* unsupported/corrupt state database: try an older schema or the index */ }
+    finally { db.close() }
+  }
+  return out
+}
 
 interface FileCache {
   files?: Record<string, { stamp: string; meta: SessionMeta }>
@@ -116,7 +161,7 @@ function parseFile(file: string): SessionMeta {
     }
   }
 
-  const sessionId = (meta?.session_id as string) || idFromName(file)
+  const sessionId = (meta?.id as string) || (meta?.session_id as string) || idFromName(file)
   const cwd = (meta?.cwd as string) || null
   const st = statOf(file)
   const repo = cwd ? gitRoot(cwd) : null
@@ -150,14 +195,16 @@ function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
   for (const full of files()) {
     const st = statOf(full)
     if (!st || st.size < 200) continue
-    const stamp = `${Math.round(st.mtimeMs)}:${st.size}`
+    const stamp = `titles-v1:${st.mtimeMs}:${st.size}`
     const hit = prev[full]
     const meta = hit && hit.stamp === stamp ? hit.meta : parseFile(full)
     next[full] = { stamp, meta }
     out.push(meta)
   }
   cache.files = next
-  return out
+  const names = titles(out.map((m) => m.id))
+  // Overlay without caching: renaming does not necessarily touch the rollout file.
+  return out.map((m) => ({ ...m, title: names.get(m.id) || m.title }))
 }
 
 function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
@@ -211,7 +258,7 @@ export const codexAdapter: Adapter = {
   id: 'codex',
   label: 'Codex',
   available,
-  sources: () => [ROOT, ARCHIVED],
+  sources: () => [ROOT, ARCHIVED, INDEX, ...(process.env.ASS_CODEX_DB ? [process.env.ASS_CODEX_DB] : [])],
   list,
   read,
   resumeCmd: (m) => `codex resume ${m.id}`,

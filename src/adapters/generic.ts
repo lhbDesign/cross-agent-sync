@@ -4,6 +4,7 @@ import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionM
 import { cleanUserText, exists, gitRoot, isDir, isInjected, parseDataUrl, plain, projectName, readJsonl, statOf } from '../util'
 import { expandPath, type CustomAgent } from '../config'
 import { openSqlite } from '../sqlite'
+import { sessionTitle } from './title'
 
 /**
  * 自定义 agent（R5）：用户在自己的配置里声明「这是什么 agent、数据在哪、字段怎么取」。
@@ -171,7 +172,7 @@ export function makeCustomAdapter(cfg: CustomAgent): Adapter {
           const c = pick(rec, cwdPath)
           if (!cwd && c) cwd = str(c)
           const ti = pick(rec, titlePath)
-          if (!title && ti) title = str(ti)
+          if (sessionTitle(ti)) title = sessionTitle(ti)
           const role = roleOf(pick(rec, rolePath))
           if (!role) continue
           bubbles++
@@ -247,7 +248,7 @@ function sqliteList(cfg: CustomAgent, file: string, idPath: string, cwdPath: str
       const c = g[cwdPath]
       if (!cfgCwd && c) cfgCwd = str(c)
       const ti = g[titlePath]
-      if (!title && ti) title = str(ti)
+      if (sessionTitle(ti)) title = sessionTitle(ti)
       const role = roleOf(g[rolePath2])
       if (!role) continue
       bubbles++

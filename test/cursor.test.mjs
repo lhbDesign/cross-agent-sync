@@ -104,3 +104,21 @@ test('Cursor 自动交接优先 conversation_id，兼容独立 session_id，原�
   assert.equal(repeat.status, 'unchanged')
   assert.deepEqual(fs.readFileSync(dbFile), before)
 })
+
+test('Cursor: native title rename refreshes; composer data precedes subtitle; malformed names fall back', { skip: !hasSqlite }, () => {
+  const title = () => api.cursorAdapter.list({}, { cache: {} }).find(s => s.id === A).title
+  const sql = s => execFileSync('sqlite3', [dbFile], { input: s })
+  assert.equal(title(), '有 workspace.json 的')
+  sql(`update composerHeaders set value='{"name":"重命名","subtitle":"副标题"}' where composerId='${A}';`)
+  assert.equal(title(), '重命名')
+  sql(`insert into cursorDiskKV values ('composerData:${A}','{"name":"正文元数据中的标题"}');`)
+  assert.equal(title(), '重命名', 'header title is authoritative')
+  sql(`update composerHeaders set value='{"name":"  ","subtitle":"副标题"}' where composerId='${A}';`)
+  assert.equal(title(), '正文元数据中的标题')
+  sql(`update cursorDiskKV set value='{broken' where key='composerData:${A}';`)
+  assert.equal(title(), '副标题')
+  sql(`update composerHeaders set value='{"name":{},"subtitle":"副标题"}' where composerId='${A}';`)
+  assert.equal(title(), '副标题')
+  sql(`update composerHeaders set value='null' where composerId='${A}';`)
+  assert.equal(title(), '(未命名)')
+})

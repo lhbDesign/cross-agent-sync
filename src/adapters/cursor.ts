@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionMeta, Turn } from '../types'
 import { HOME, cleanUserText, exists, gitRoot, isInjected, plain, projectName, readJsonFile } from '../util'
 import { lit, openSqlite, type Db } from '../sqlite'
+import { sessionTitle } from './title'
 
 /**
  * Cursor：<User>/globalStorage/state.vscdb（SQLite）
@@ -137,10 +138,20 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
   }
   const out: SessionMeta[] = []
   const wsFallback = workspacePathFallback(d) // 读一次，整轮复用
+  const names = new Map<string, string>()
+  try {
+    for (const r of d.query<{ key: string; name: unknown }>(
+      `select key, case when json_valid(value) then json_extract(value, '$.name') end as name
+         from cursorDiskKV where key like 'composerData:%'`,
+    )) {
+      const name = sessionTitle(r.name)
+      if (name) names.set(r.key.slice('composerData:'.length), name)
+    }
+  } catch { /* Older schemas may only expose composerHeaders. */ }
   for (const r of rows) {
     let head: Record<string, any> = {}
     try {
-      head = JSON.parse(String(r.value))
+      head = JSON.parse(String(r.value)) || {}
     } catch {
       /* ignore */
     }
@@ -153,7 +164,7 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
       agent: 'cursor',
       agentLabel: 'Cursor',
       id: String(r.composerId),
-      title: String(head.name || head.subtitle || '(未命名)'),
+      title: sessionTitle(head.name) || names.get(String(r.composerId)) || sessionTitle(head.subtitle) || '(未命名)',
       preview: plain(String(head.subtitle || ''), 140),
       cwd,
       repo,

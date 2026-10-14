@@ -2,6 +2,7 @@ import path from 'node:path'
 import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionMeta, Turn } from '../types'
 import { HOME, cleanUserText, exists, gitRoot, isInjected, parseDataUrl, plain, projectName } from '../util'
 import { lit, openSqlite, type Db } from '../sqlite'
+import { sessionTitle } from './title'
 
 /**
  * OpenCode：~/.local/share/opencode/opencode.db（SQLite）
@@ -81,7 +82,7 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
       agent: 'opencode',
       agentLabel: 'OpenCode',
       id: r.id,
-      title: r.title || '(空会话)',
+      title: sessionTitle(r.title) || '(空会话)',
       preview,
       cwd,
       repo,

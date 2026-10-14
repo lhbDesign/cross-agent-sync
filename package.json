@@ -1,6 +1,6 @@
 {
   "name": "cross-agent-sync",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Cross-agent session sync: when you switch agents or start a new chat, one command brings over prior context, the original question (including images). Supports Claude Code / Codex / Cursor / OpenCode / Kiro / Trae and custom agents.",
   "repository": {
     "type": "git",

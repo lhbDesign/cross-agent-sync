@@ -4,6 +4,21 @@
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-10-14
+
+### 修复
+
+- **会话标题与原工具对齐**：Codex 优先读取只读状态库 `threads.title`，回退到 `session_index.jsonl` 的 `thread_name`，最后使用首条用户消息；支持归档会话与 `session_meta.id`。
+- **Claude Code 标题更新**：读取最新有效的 AI 标题及自定义标题，自定义标题优先；无日志标题时读取项目 `sessions-index.json`，最后回退到首条用户消息。
+- **Cursor / OpenCode**：保持原生标题优先，Cursor 补充 `composerData.name` 回退；空白或格式错误的标题不再遮挡后续回退。验证仅修改标题时即可刷新，消息预览保持独立。
+- **自定义 agent**：JSON/JSONL 和 SQLite 映射读取最后一个有效标题；记录顺序由文件或自定义 SQL 的排序决定。
+- **缓存与容错**：旧版日志解析缓存自动失效；Codex/Claude 外部标题元数据每次列表重新读取，无需修改会话日志或清理缓存；不可读的标题元数据不会导致会话丢失。原始会话与数据库始终只读。
+
+### 升级
+
+- 更新到 0.4.1 后重启 MCP 客户端。CLI 在下次运行时使用新标题；已有交接快照和保存的任务目标不会被追溯改写。
+- Codex 可用 `ASS_CODEX_INDEX` / `ASS_CODEX_DB` 指定标题索引与状态库；指定 `ASS_CODEX_DIR` 时默认在其父目录查找标题元数据，不混用另一安装的标题。
+
 ## [0.4.0] — 2026-10-13
 
 ### 新增
@@ -265,7 +280,8 @@
 - Gemini CLI 的会话记录里没有仓库路径，只能通过 `ass list --all` 看到，无法按仓库过滤。
 - Trae / Windsurf / VS Code Copilot Chat 的存储结构还没摸清，`ass detect` 能找到库文件但不解析。
 
-[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.2.2...v0.3.0

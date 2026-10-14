@@ -119,10 +119,10 @@ export function assertWritable(target: string, what = '写操作'): void {
  * 这里的意义不在于防外部攻击，而在于让"我们只读"这件事在代码里只有一个入口，
  * 想改写成可写都改不了（这个函数不给 flags 参数）。
  */
-export function openSource(file: string): number | null {
+export function openSource(file: string, scope: 'directory' | 'file' = 'directory'): number | null {
   const real = realpath(file)
   // 读即登记：父目录进入保护区（覆盖 sources() 看不出来的读路径，如 Cursor 的附件目录）
-  roots.set(path.dirname(real), `${path.basename(real)} 所在目录（读即登记）`)
+  roots.set(scope === 'file' ? real : path.dirname(real), `${path.basename(real)}（读即登记）`)
   try {
     const fd = fs.openSync(real, fs.constants.O_RDONLY)
     noteOpened(real, fd)
@@ -149,9 +149,9 @@ export function noteOpened(realPath: string, fd: number): void {
  * 句柄在 node:sqlite 或 sqlite3 命令行手里，我们插不进去，但"读过它"这件事仍须登记，
  * 否则受保护区会漏掉 `state.vscdb` 所在的目录。
  */
-export function noteSourceRead(file: string): void {
+export function noteSourceRead(file: string, scope: 'directory' | 'file' = 'directory'): void {
   const real = realpath(file)
-  roots.set(path.dirname(real), `${path.basename(real)} 所在目录（读即登记）`)
+  roots.set(scope === 'file' ? real : path.dirname(real), `${path.basename(real)}（读即登记）`)
   const fp = statFp(real)
   if (fp) opened.set(real, fp)
 }
