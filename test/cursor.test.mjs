@@ -122,3 +122,19 @@ test('Cursor: native title rename refreshes; composer data precedes subtitle; ma
   sql(`update composerHeaders set value='null' where composerId='${A}';`)
   assert.equal(title(), '(未命名)')
 })
+
+test('Cursor: fullConversationHeadersOnly controls full and tail message order', { skip: !hasSqlite }, () => {
+  const sql = s => execFileSync('sqlite3', [dbFile], { input: s })
+  sql(`update cursorDiskKV
+          set value='{"fullConversationHeadersOnly":[{"bubbleId":"b2","type":2},{"bubbleId":"b1","type":1}]}'
+        where key='composerData:${A}';`)
+  const meta = api.cursorAdapter.list({}, { cache: {} }).find(s => s.id === A)
+  assert.deepEqual(api.cursorAdapter.read(meta).map(t => t.text), ['收到', '你好'])
+  assert.deepEqual(api.cursorAdapter.read(meta, { tail: 1 }).map(t => t.text), ['你好'])
+
+  sql(`insert into cursorDiskKV values ('bubbleId:${A}:b3','{"type":1,"text":"废弃分支不能混入主线"}');`)
+  assert.deepEqual(api.cursorAdapter.read(meta).map(t => t.text), ['收到', '你好'])
+  const refreshed = api.cursorAdapter.list({}, { cache: {} }).find(s => s.id === A)
+  assert.equal(refreshed.bubbles, 2, '消息数来自当前主线，不包含 KV 中残留的废弃分支')
+  assert.equal(refreshed.turns, 1)
+})

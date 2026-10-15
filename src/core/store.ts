@@ -86,7 +86,7 @@ export function listSessions(opts: ListOptions = {}, cfg: Config = loadConfig())
   out.sort((a, b) => (b.updatedAt || b.startedAt || 0) - (a.updatedAt || a.startedAt || 0))
   if (opts.limit && opts.limit > 0) out = out.slice(0, opts.limit)
 
-  cache.lastList = out.map((s) => s.key)
+  if (!opts.preserveLastList) cache.lastList = out.map((s) => s.key)
   saveCache(cache)
 
   return { sessions: out, errors, adapters }
@@ -163,6 +163,8 @@ export interface FoundSession {
 export function findSession(ref: string, cfg: Config = loadConfig()): FoundSession | null {
   const adapters = buildAdapters(cfg, { includeUnavailable: true })
   const cache = loadCache()
+  // `#N` 指向用户上一次看见的列表。后面的全量扫描会重写缓存，必须先保存快照。
+  const displayedList = [...(cache.lastList || [])]
 
   // 1. 看起来像 `agent:...` 的，只问那个 adapter
   const m = /^([a-z0-9_-]+):(.+)$/i.exec(ref.trim())
@@ -183,8 +185,8 @@ export function findSession(ref: string, cfg: Config = loadConfig()): FoundSessi
   }
 
   // 2. 全量列表 + 引用解析
-  const { sessions } = listSessions({ includeAll: true }, cfg)
-  const meta = resolveRef(ref, sessions, loadCache().lastList)
+  const { sessions } = listSessions({ includeAll: true, preserveLastList: true }, cfg)
+  const meta = resolveRef(ref, sessions, displayedList)
   if (!meta) return null
   const adapter = adapters.find((a) => a.id === meta.agent)
   if (!adapter) return null

@@ -126,37 +126,40 @@ function parseFile(file: string): SessionMeta {
   let lastUser: string | null = null
   let turns = 0
   let bubbles = 0
-  // 同一个用户消息在旧版里是 event_msg、新版里是 response_item.message，
-  // 用签名去重，避免两种都有的会话被算两次。
-  const sigs = new Set<string>()
-
-  const noteUser = (text: string): void => {
+  let messageOrdinal = 0
+  let prior: { role: 'user' | 'assistant'; text: string; source: string; at: number | null; ordinal: number } | null = null
+  const noteMessage = (role: 'user' | 'assistant', text: string, source: string, at: number | null): void => {
+    messageOrdinal++
     const t = text.trim()
-    if (!t || isInjected(t)) return
-    const sig = t.slice(0, 200)
-    if (sigs.has(sig)) return
-    sigs.add(sig)
-    turns++
-    lastUser = t
-    if (!firstUser) firstUser = t
+    if (!t || (role === 'user' && isInjected(t))) return
+    const closeInTime = prior?.at == null || at == null || Math.abs(at - prior.at) <= 1000
+    const duplicateEncoding = prior?.ordinal === messageOrdinal - 1 && prior.role === role && prior.text === t && prior.source !== source && closeInTime
+    if (!duplicateEncoding) {
+      bubbles++
+      if (role === 'user') {
+        turns++
+        lastUser = t
+        if (!firstUser) firstUser = t
+      }
+    }
+    prior = { role, text: t, source, at, ordinal: messageOrdinal }
   }
 
   for (const rec of readJsonl(file)) {
     const p: Record<string, any> = rec.payload || {}
     if (!meta && rec.type === 'session_meta') meta = p
     if (!model && rec.type === 'turn_context') model = p.model || p.model_info?.id || null
+    const at = rec.timestamp ? Date.parse(String(rec.timestamp)) || null : null
     if (rec.type === 'event_msg' && p.type === 'user_message') {
-      noteUser(String(p.message || ''))
-      bubbles++
+      noteMessage('user', String(p.message || ''), 'event_msg', at)
     } else if (rec.type === 'event_msg' && p.type === 'agent_message') {
-      bubbles++
+      noteMessage('assistant', String(p.message || ''), 'event_msg', at)
     } else if (rec.type === 'response_item' && p.type === 'message') {
       const { text } = messageParts(p)
       if (p.role === 'user') {
-        noteUser(text)
-        bubbles++
+        noteMessage('user', text, 'response_item', at)
       } else if (p.role === 'assistant') {
-        bubbles++
+        noteMessage('assistant', text, 'response_item', at)
       }
     }
   }
@@ -209,15 +212,22 @@ function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
 
 function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
   const turns: Turn[] = []
-  const seen = new Set<string>()
-  const push = (role: Turn['role'], text: string, at: number | undefined, images?: ImagePart[]) => {
+  let messageOrdinal = 0
+  let prior: { role: Turn['role']; text: string; source: string; at: number | undefined; ordinal: number; turnIndex: number } | null = null
+  const push = (role: Turn['role'], text: string, at: number | undefined, source: string, images?: ImagePart[]) => {
+    messageOrdinal++
     const t = text.trim()
     if (!t && !images?.length) return
     if (isInjected(t) && !images?.length) return
-    const sig = `${role}:${t.slice(0, 160)}:${images?.length ?? 0}`
-    if (seen.has(sig)) return
-    seen.add(sig)
+    const closeInTime = prior?.at == null || at == null || Math.abs(at - prior.at) <= 1000
+    const duplicateEncoding = prior?.ordinal === messageOrdinal - 1 && prior.role === role && prior.text === t && prior.source !== source && closeInTime
+    if (duplicateEncoding && prior) {
+      if (images?.length && !turns[prior.turnIndex]?.images?.length) turns[prior.turnIndex] = { ...turns[prior.turnIndex], images }
+      prior = { role, text: t, source, at, ordinal: messageOrdinal, turnIndex: prior.turnIndex }
+      return
+    }
     turns.push({ role, text: t, at, images: images?.length ? images : undefined })
+    prior = { role, text: t, source, at, ordinal: messageOrdinal, turnIndex: turns.length - 1 }
   }
 
   const iter = opts.tail ? readJsonlTail(meta.source, Math.max(1 << 20, opts.tail * 4096)) : readJsonl(meta.source)
@@ -225,12 +235,12 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
     const p: Record<string, any> = rec.payload || {}
     const at = Date.parse(rec.timestamp) || undefined
     if (rec.type === 'event_msg') {
-      if (p.type === 'user_message') push('user', String(p.message || ''), at)
-      else if (p.type === 'agent_message') push('assistant', String(p.message || ''), at)
+      if (p.type === 'user_message') push('user', String(p.message || ''), at, 'event_msg')
+      else if (p.type === 'agent_message') push('assistant', String(p.message || ''), at, 'event_msg')
     } else if (rec.type === 'response_item' && p.type === 'message') {
       const { text, images } = messageParts(p)
-      if (p.role === 'user') push('user', text, at, images)
-      else if (p.role === 'assistant') push('assistant', text, at)
+      if (p.role === 'user') push('user', text, at, 'response_item', images)
+      else if (p.role === 'assistant') push('assistant', text, at, 'response_item')
     } else if (rec.type === 'response_item' && (p.type === 'function_call' || p.type === 'custom_tool_call')) {
       const name = String(p.name || 'tool')
       let arg: unknown = p.arguments

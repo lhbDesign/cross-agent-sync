@@ -28,7 +28,7 @@
 | **记录决策 / 踩坑 / 约束 / 待办**，置顶给下一个 agent | `ass context` · `session_remember` |
 | **把多段会话绑成一件事**（任务），换 agent 一句话接上 | `ass task` · `ass resume` · `session_task` |
 | 看任务全貌：原始目标 / 决策 / 各段进展 / 待办 | `ass resume <任务>` · `session_task_resume` |
-| 跨 agent 全文搜索 | `ass search "点击穿透"` · `session_search` |
+| 跨 agent 搜索标题、预览和对话正文 | `ass search "点击穿透"` · `session_search` |
 | 一键把 MCP + 规则接进本机各 agent | `ass install` |
 | **自检索**：扫盘找出本机所有可能的 agent | `ass detect` · `session_detect` |
 | 哪些 agent 被探测到了、数据在哪 | `ass agents` |
@@ -94,13 +94,15 @@ ass task add cross-agent-sync开发 claude:4134ec80
 
 ---
 
-## 会话标题同步（0.4.1）
+## 会话标题与搜索（1.0.0）
 
 会话列表优先显示原工具保存的标题。Codex 依次读取本地状态库、`session_index.jsonl`、首条用户消息；Claude Code 优先使用最新自定义标题，其次是最新 AI 标题、项目会话索引、首条用户消息。Cursor 依次使用会话头名称、composer 数据名称、副标题、未命名占位符；OpenCode 使用会话标题或空会话占位符。自定义适配器使用映射字段中最后一个非空字符串标题，按文件或查询返回顺序处理（SQL 请明确指定 `ORDER BY`）。
 
 在原工具中改名后，下次列会话即可刷新，即使聊天日志本身没有变化。标题元数据缺失或损坏时自动回退，不隐藏会话；最近消息预览保持独立。所有原始数据只读，已有交接快照和任务目标不追溯改写。升级后请重启 MCP 客户端。
 
 可用 `ASS_CODEX_INDEX`、`ASS_CODEX_DB` 指定标题索引和状态库。默认从会话目录旁的 `CODEX_HOME` 或 `~/.codex` 查找；设置 `ASS_CODEX_DIR` 后，改从该目录的父目录查找。
+
+`ass search` 和 `session_search` 会同时搜索原生标题、最近消息预览和解析后的对话正文，并分别标注标题、预览、用户消息或助手消息命中。
 
 ## 查看每一次用户输入（0.4.0）
 
@@ -477,7 +479,7 @@ ass mcp --write --undo     # 撤销，只摘我们那一项（别人的 server �
 ass                      当前仓库：上次收尾记录 + 最近会话
 ass list [选项]           列出会话（--all 跨仓库，--agent claude，--limit 20，--json，--no-cache）
 ass show <引用>           看某个会话（--full 全部，--tail 6 最后 N 条）
-ass search <关键词>       在最近会话正文里全文搜索（--all，--scan 60）
+ass search <关键词>       搜索标题、预览和最近会话正文（--all，--scan 60）
 
 ass inputs <引用>        所有用户输入全文（--round N / --raw / --out 文件 / --json）
 ass last [引用]           把最后一问原样搬过来（--rounds 3，含图片落盘）
@@ -524,7 +526,7 @@ ass doctor               自检
 | `session_read` | `summary` / `tail` / `full` 读原始对话 |
 | `session_inputs` | 按顺序查看所有用户输入全文，或指定一条 |
 | `session_last` | 把上一问（含图片）原样搬到当前 agent |
-| `session_search` | 跨会话全文搜索 |
+| `session_search` | 跨会话搜索标题、预览和对话正文 |
 | `session_note` | 保存交接摘要（收尾时用） |
 | `session_remember` | 记录决策 / 踩坑 / 约束 / 待办（**干活过程中就调**） |
 | `session_task` | 把当前会话绑进一个任务（`attach` / `list` / `unbind` / `done`） |
@@ -709,6 +711,7 @@ ass hook uninstall --agent claude
 - Claude Code：用户级 `~/.claude/settings.json` 的 `Stop` 和 `SessionEnd`。
 - Cursor：用户级 `~/.cursor/hooks.json` 的 `stop` 和 `sessionEnd`。
 - macOS/Linux 支持自动安装。配置合并前备份，重复安装不重复添加；缺少 agent 配置目录时跳过。`ass install` 不会隐式开启钩子。升级或移动本工具后应重新运行 `ass hook install`，并按主机提示重新加载设置。
+- 1.0.0 只有 Claude Code 和 Cursor 提供原生钩子安装器。Codex、OpenCode 和自定义 agent 只有在宿主提供合适的生命周期回调、并且对应历史适配器能读取会话时，才能手工接入 `ass hook run --agent <agent>`。
 - 原生事件规范：[Claude Code Hooks](https://code.claude.com/docs/en/hooks)、[Cursor Hooks](https://cursor.com/docs/hooks)。30 秒钩子超时用于给本地归档留出时间；主机终止进程、崩溃或强制退出可能使钩子无法运行，因此同时在轮次结束时保存。
 
 ### 保存规则与失败恢复

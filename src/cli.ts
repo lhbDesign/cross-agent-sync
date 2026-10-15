@@ -1181,7 +1181,7 @@ ${c.bold('看历史')}
   ass                      当前仓库：上次收尾记录 + 最近会话
   ass list [选项]           列出会话（--all 跨仓库，--agent claude，--limit 20，--json）
   ass show <引用>           看某个会话（--full 全部，--tail 6 最后 N 条）
-  ass search <关键词>       在最近会话正文里全文搜索（--all 跨仓库，--scan 60）
+  ass search <关键词>       搜索标题、预览和最近会话正文（--all 跨仓库，--scan 60）
 
 ${c.bold('搬上下文')}
   ass inputs <引用>        所有用户输入全文（--round 3 选一条；--raw 纯正文；--out 文件；--json）

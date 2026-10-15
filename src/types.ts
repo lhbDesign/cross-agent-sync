@@ -67,6 +67,8 @@ export interface ListOptions {
   noCache?: boolean
   /** 只看某个 agent */
   agent?: string
+  /** 内部扫描不应覆盖用户最后看见的编号列表 */
+  preserveLastList?: boolean
 }
 
 export interface AdapterCtx {

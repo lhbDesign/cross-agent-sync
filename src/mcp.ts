@@ -335,7 +335,7 @@ const TOOLS: ToolDef[] = [
   {
     name: 'session_search',
     description:
-      'Full-text search across the message history of recent sessions (all agents) for a keyword, error message, ' +
+      'Search native titles, latest-message previews, and parsed message history across recent sessions (all agents) for a keyword, error message, ' +
       'file name or decision. Useful when the user remembers "we discussed this somewhere" but not which agent or when.',
     inputSchema: {
       type: 'object',

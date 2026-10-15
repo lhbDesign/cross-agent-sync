@@ -28,7 +28,7 @@ aligns them by **repository**, then lets you “pick a session → bring the con
 | **Record decisions / dead ends / constraints / todos**, pinned for the next agent | `ass context` · `session_remember` |
 | **Bind multiple sessions into one task**, then resume in another agent with one sentence | `ass task` · `ass resume` · `session_task` |
 | Task overview: original goal / decisions / per-segment progress / todos | `ass resume <task>` · `session_task_resume` |
-| Full-text search across agents | `ass search "click-through"` · `session_search` |
+| Search titles, previews, and conversation bodies across agents | `ass search "click-through"` · `session_search` |
 | One-shot wire MCP + rules into local agents | `ass install` |
 | **Auto-detect**: scan the disk for possible agents | `ass detect` · `session_detect` |
 | Which agents were found and where their data lives | `ass agents` |
@@ -98,13 +98,15 @@ ass task add cross-agent-sync-dev claude:4134ec80
 
 ---
 
-## Session titles (0.4.1)
+## Session titles and search (1.0.0)
 
 Session lists prefer titles saved by the original tool. Codex reads the local state database, then `session_index.jsonl`, then the first user message. Claude Code uses the latest custom title or AI title, then the project session index, then the first user message. Cursor uses the header name, composer-data name, subtitle, or an unnamed placeholder; OpenCode uses its session title or an empty-session placeholder. Custom adapters use the last non-empty string in the mapped title field, in file/query order (use an explicit `ORDER BY` for SQL).
 
 Renames refresh on the next list request, including when only the title index/database changes. Missing or malformed title metadata falls back without hiding the session. Message previews remain separate. All source data stays read-only; saved handoff snapshots and task goals are not rewritten. Restart MCP clients after upgrading.
 
 `ASS_CODEX_INDEX` and `ASS_CODEX_DB` override the title sources. By default they are discovered beside the sessions directory (`CODEX_HOME` or `~/.codex`); with `ASS_CODEX_DIR`, they are discovered in that directory’s parent.
+
+`ass search` and `session_search` search the native title, the latest-message preview, and parsed conversation bodies. Results label title and preview matches separately from user/assistant message matches.
 
 ## View every user input (0.4.0)
 
@@ -487,7 +489,7 @@ Column names from `query` must match `map` values; multiple rows sharing an `id`
 ass                      Current repo: last wrap-up note + recent sessions
 ass list [options]       List sessions (--all across repos, --agent claude, --limit 20, --json, --no-cache)
 ass show <ref>           Inspect a session (--full all, --tail 6 last N)
-ass search <query>       Full-text search in recent session bodies (--all, --scan 60)
+ass search <query>       Search titles, previews, and recent session bodies (--all, --scan 60)
 
 ass inputs <ref>        All user inputs (--round N / --raw / --out file / --json)
 ass last [ref]           Port the last question as-is (--rounds 3, images on disk)
@@ -534,7 +536,7 @@ ass doctor               Self-check
 | `session_read` | `summary` / `tail` / `full` raw dialogue |
 | `session_inputs` | Read all user inputs in order, or select one by number |
 | `session_last` | Port the previous question (incl. images) into the current agent |
-| `session_search` | Cross-session full-text search |
+| `session_search` | Search titles, previews, and conversation bodies across sessions |
 | `session_note` | Save handoff brief (wrap-up) |
 | `session_remember` | Record decision / dead end / constraint / todo (**call while working**) |
 | `session_task` | Bind current session into a task (`attach` / `list` / `unbind` / `done`) |
@@ -723,6 +725,8 @@ ass hook uninstall --agent claude
 ```
 
 Native installers support macOS/Linux and merge user-level configuration with backups: Claude Code `~/.claude/settings.json` (`Stop`, `SessionEnd`) and Cursor `~/.cursor/hooks.json` (`stop`, `sessionEnd`). Existing handlers are preserved; installs are idempotent and missing agent directories are skipped. `ass install` does not enable hooks implicitly. Reinstall hooks after moving/upgrading this package and reload settings as required by the host.
+
+Claude Code and Cursor are the only agents with native hook installers in 1.0.0. Codex, OpenCode, and custom agents can use `ass hook run --agent <agent>` only when their host provides a suitable lifecycle callback and the corresponding history adapter can read the session.
 
 The native contracts are documented in [Claude Code Hooks](https://code.claude.com/docs/en/hooks) and [Cursor Hooks](https://cursor.com/docs/hooks). Installed handlers have a 30-second timeout. Forced termination may prevent exit hooks, so turn-end snapshots provide an earlier checkpoint.
 

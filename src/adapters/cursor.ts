@@ -138,14 +138,21 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
   }
   const out: SessionMeta[] = []
   const wsFallback = workspacePathFallback(d) // 读一次，整轮复用
-  const names = new Map<string, string>()
+  const composerInfo = new Map<string, { name: string; bubbles?: number; turns?: number }>()
   try {
-    for (const r of d.query<{ key: string; name: unknown }>(
-      `select key, case when json_valid(value) then json_extract(value, '$.name') end as name
-         from cursorDiskKV where key like 'composerData:%'`,
+    for (const r of d.query<{ key: string; value: string }>(
+      `select key, value from cursorDiskKV where key like 'composerData:%'`,
     )) {
-      const name = sessionTitle(r.name)
-      if (name) names.set(r.key.slice('composerData:'.length), name)
+      try {
+        const data = JSON.parse(r.value)
+        const name = sessionTitle(data?.name)
+        const headers = Array.isArray(data?.fullConversationHeadersOnly) ? data.fullConversationHeadersOnly : null
+        composerInfo.set(r.key.slice('composerData:'.length), {
+          name,
+          bubbles: headers?.length,
+          turns: headers?.filter((h: any) => String(h?.type) === '1').length,
+        })
+      } catch { /* malformed composer data: header metadata remains usable */ }
     }
   } catch { /* Older schemas may only expose composerHeaders. */ }
   for (const r of rows) {
@@ -158,13 +165,17 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
     if (head.isDraft) continue
     const cwd = workspacePath(String(r.workspaceId || ''), wsFallback)
     const repo = cwd ? gitRoot(cwd) : null
-    const st = stats.get(String(r.composerId)) || { bubbles: 0, turns: 0 }
+    const info = composerInfo.get(String(r.composerId))
+    const fallbackStats = stats.get(String(r.composerId)) || { bubbles: 0, turns: 0 }
+    const st = info?.bubbles !== undefined
+      ? { bubbles: info.bubbles, turns: info.turns || 0 }
+      : fallbackStats
     out.push({
       key: `cursor:${r.composerId}`,
       agent: 'cursor',
       agentLabel: 'Cursor',
       id: String(r.composerId),
-      title: sessionTitle(head.name) || names.get(String(r.composerId)) || sessionTitle(head.subtitle) || '(未命名)',
+      title: sessionTitle(head.name) || info?.name || sessionTitle(head.subtitle) || '(未命名)',
       preview: plain(String(head.subtitle || ''), 140),
       cwd,
       repo,
@@ -222,7 +233,26 @@ function listBubbles(d: Db, composerId: string): BubbleRow[] {
   const rows = d.query<BubbleRow>(
     `select key, value from cursorDiskKV where key like ${lit(`bubbleId:${composerId}:%`)} order by key asc`,
   )
-  return rows
+  if (rows.length < 2) return rows
+  try {
+    const data = d.query<{ value: string }>(
+      `select value from cursorDiskKV where key = ${lit(`composerData:${composerId}`)} limit 1`,
+    )[0]?.value
+    const parsed = data ? JSON.parse(data) : null
+    const headers = Array.isArray(parsed?.fullConversationHeadersOnly) ? parsed.fullConversationHeadersOnly : []
+    const position = new Map<string, number>()
+    for (const h of headers) {
+      const id = typeof h?.bubbleId === 'string' ? h.bubbleId : ''
+      if (id && !position.has(id)) position.set(id, position.size)
+    }
+    if (!position.size) return rows
+    const prefix = `bubbleId:${composerId}:`
+    const byId = new Map(rows.map((row) => [row.key.slice(prefix.length), row]))
+    // Cursor keeps abandoned branch bubbles in the KV table. The header list is the active transcript.
+    return [...position.keys()].map((id) => byId.get(id)).filter((row): row is BubbleRow => Boolean(row))
+  } catch {
+    return rows
+  }
 }
 
 function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {

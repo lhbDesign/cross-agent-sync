@@ -7,3 +7,6 @@ dist/
 # 项目级配置用 `ass mcp --write` 生成，各自跑一次即可，不要提交
 .mcp.json
 .cursor/mcp.json
+
+# 本地文章草稿
+/掘金-跨Agent会话同步实践.md

@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-10-15
+
+### 修复
+
+- **稳定编号引用**：`#N` 在解析过程中保留用户上一次看到的列表快照，不再因内部全量扫描覆盖缓存而指向另一仓库的会话；长期保存仍应使用稳定的 `agent:id`。
+- **Codex 重复轮次**：只合并同一消息在相邻 `response_item` / `event_msg` 中的双份编码，保留用户在不同轮次重复发送的“继续”等真实输入；轮次、消息数、预览和输入列表保持一致。
+- **Cursor 消息顺序与分支**：按 `composerData.fullConversationHeadersOnly` 的原始 `bubbleId` 顺序读取当前主线，排除 KV 中残留的废弃分支；缺少索引时稳定回退。轮次、消息数、`tail`、最后一问、摘要和自动交接共享同一主线定义。
+
+### 改进
+
+- **跨会话搜索**：`ass search` / `session_search` 同时搜索原生会话标题、最近消息预览和对话正文，并在结果中标明命中来源。
+- **支持范围说明**：明确内置历史解析器为 Claude Code、Codex、Cursor、OpenCode；Continue、Gemini CLI 通过现成自定义配置接入；Kiro、Trae、Windsurf 等需检测后自行映射。原生自动交接安装器仅覆盖 Claude Code 和 Cursor。
+- 新增 [1.0.0 发布修复计划](docs/1.0.0-release-plan.md)，记录实施顺序、验收标准、只读边界和发布边界。
+
+### 升级
+
+- 升级后重新运行 `ass install` 更新规则并重启 MCP 客户端。若已启用自动交接钩子，再运行 `ass hook install` 更新命令路径。
+- 原始会话保持只读；已有交接快照和任务目标不追溯改写。
+
 ## [0.4.1] — 2026-10-14
 
 ### 修复
@@ -276,11 +295,12 @@
 
 ### 已知限制
 
-- Cursor 的轮次数是近似值（消息类型存在 JSON 里，只能 LIKE 匹配）。
+- Cursor 有当前主线头部索引时按索引精确统计；旧结构缺少索引时回退到 JSON `LIKE` 近似计数。
 - Gemini CLI 的会话记录里没有仓库路径，只能通过 `ass list --all` 看到，无法按仓库过滤。
 - Trae / Windsurf / VS Code Copilot Chat 的存储结构还没摸清，`ass detect` 能找到库文件但不解析。
 
-[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.1...v1.0.0
 [0.4.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.3.0...v0.3.1
