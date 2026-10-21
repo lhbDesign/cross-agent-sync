@@ -27,6 +27,9 @@ fs.writeFileSync(
     { type: 'assistant', cwd: projDir, timestamp: '2026-09-01T10:00:05.000Z', message: { model: 'claude-x', content: [{ type: 'text', text: '好的我看下' }] } },
     { type: 'user', cwd: projDir, timestamp: '2026-09-01T10:01:00.000Z',
       message: { content: [{ type: 'tool_result', content: 'x' }] } },
+    // harness 自己注入的内容（skill 全文等）会带 isMeta —— 不是用户说的话，不该算成一轮
+    { type: 'user', isMeta: true, cwd: projDir, timestamp: '2026-09-01T10:02:00.000Z',
+      message: { content: [{ type: 'text', text: 'Base directory for this skill: /tmp/x\n# Data Visualization' }] } },
   ].map((r) => JSON.stringify(r)).join('\n') + '\n',
 )
 
@@ -73,7 +76,7 @@ test('claude adapter：认出会话、轮次和图片', () => {
   const s = sessions[0]
   assert.equal(s.agent, 'claude')
   assert.equal(s.id, 'aaaa-1111')
-  assert.equal(s.turns, 1, 'tool_result 不算用户轮次')
+  assert.equal(s.turns, 1, 'tool_result 和 isMeta 注入都不算用户轮次')
   assert.equal(s.repo, fs.realpathSync(projDir))
 
   const found = api.findSession(`claude:${s.id}`, { agents: { claude: true, codex: false, cursor: false, opencode: false } })

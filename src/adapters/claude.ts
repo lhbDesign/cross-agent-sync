@@ -46,6 +46,10 @@ function isHumanUser(rec: Record<string, any>): boolean {
   const toolResult = Array.isArray(c) && c.some((b: any) => b && b.type === 'tool_result')
   if (toolResult) return false
   if (rec.isSidechain) return false
+  // isMeta = harness 自己注入的内容（skill 全文、图片显示副本等），不是用户说的话。
+  // 以前只查了 isSidechain 漏了这个，于是 `ass inputs` 会把整篇 skill 当成「用户的第 3 条输入」。
+  // 实测图片的 isMeta 记录只是显示副本，真实那条用户消息本来就带内联图片，过滤掉不丢数据。
+  if (rec.isMeta) return false
   if (rec.origin) return rec.origin.kind === 'human'
   return true
 }
