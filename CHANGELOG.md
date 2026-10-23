@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-10-23
+
 ### 修复
 
 - **`ass` 偶尔在输出最前面冒一行 `Error: in prepare, unable to open database file (14)`**。
@@ -316,7 +318,8 @@
 - Gemini CLI 的会话记录里没有仓库路径，只能通过 `ass list --all` 看到，无法按仓库过滤。
 - Trae / Windsurf / VS Code Copilot Chat 的存储结构还没摸清，`ass detect` 能找到库文件但不解析。
 
-[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.1...v1.0.0
 [0.4.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.3.1...v0.4.0
