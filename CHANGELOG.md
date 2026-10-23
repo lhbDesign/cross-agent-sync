@@ -6,6 +6,14 @@
 
 ### 修复
 
+- **`ass` 偶尔在输出最前面冒一行 `Error: in prepare, unable to open database file (14)`**。
+  WAL 模式的库即使以 `-readonly` 打开也要碰 `-shm`，而 agent 自己经常正占着库
+  （实测 Codex 长期持有 `state_N.sqlite`），撞上就是 `SQLITE_CANTOPEN` —— 属于**瞬时锁竞争**，
+  不是配置错误。现在两条读取路径（`node:sqlite` 与 `sqlite3` 命令行）都**重试一次**，
+  仍失败则降级为「这次读不到」，并且显式 `stdio: ['ignore','pipe','pipe']`
+  确保 sqlite 子进程的 stderr 永远不会漏到用户终端。
+
+
 - **`ass inputs` 会把 harness 注入的内容当成「你的提问」**。Claude Code 会给注入的消息
   （skill 全文、图片显示副本等）打 `isMeta: true`，而适配器的 `isHumanUser()` 只检查了
   `isSidechain`，漏了这个标记 —— 于是整篇 skill 会以「第 3 条输入」的形式出现在

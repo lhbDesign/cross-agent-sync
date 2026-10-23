@@ -59,16 +59,34 @@ export function lit(v: unknown): string {
 }
 
 function openCli(file: string): Db {
+  // `-readonly` 不能省：sqlite3 命令行默认以可写方式打开，遇到需要恢复的库
+  // 会创建 -journal/-wal 旁文件甚至回写 —— 那就直接违背了"只读聚合"的前提。
+  //
+  // 但 WAL 库即使 -readonly，打开时仍要碰 -shm；如果此时 agent 自己正占着库
+  // （实测 Codex 会长期持有 state_N.sqlite），就会偶发 `unable to open database file (14)`。
+  // 这是**瞬时锁竞争**，不是配置错误 —— 重试一次通常就过去了。
+  // 仍然失败就当作「这次读不到」返回空，绝不把 sqlite 的原始 stderr 漏到用户终端。
+  const run = (sql: string): string =>
+    execFileSync('sqlite3', ['-readonly', '-json', file, sql], {
+      encoding: 'utf8',
+      maxBuffer: 256 << 20,
+      timeout: 120_000,
+      // 显式指定 stdio：不要把子进程的 stderr 继承到终端上
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
   return {
     backend: 'sqlite3(cli)',
     query<T>(sql: string): T[] {
-      // `-readonly` 不能省：sqlite3 命令行默认以可写方式打开，遇到需要恢复的库
-      // 会创建 -journal/-wal 旁文件甚至回写 —— 那就直接违背了"只读聚合"的前提。
-      const out = execFileSync('sqlite3', ['-readonly', '-json', file, sql], {
-        encoding: 'utf8',
-        maxBuffer: 256 << 20,
-        timeout: 120_000,
-      })
+      let out: string
+      try {
+        out = run(sql)
+      } catch {
+        try {
+          out = run(sql) // 锁竞争通常是瞬时的，再来一次
+        } catch {
+          return [] // 还是不行就降级为「读不到」，由上层按 0 条处理
+        }
+      }
       const t = out.trim()
       if (!t) return []
       try {
@@ -122,7 +140,17 @@ export function openSqlite(file: string, scope: 'directory' | 'file' = 'director
         db: {
           backend: 'node:sqlite',
           query<T>(sql: string): T[] {
-            return db.prepare(sql).all() as T[]
+            // 同 openCli：库被别的进程占着时可能瞬时 SQLITE_CANTOPEN，重试一次再降级，
+            // 不让这类瞬时状况冒到用户面前。
+            try {
+              return db.prepare(sql).all() as T[]
+            } catch {
+              try {
+                return db.prepare(sql).all() as T[]
+              } catch {
+                return []
+              }
+            }
           },
           close() {
             try {
