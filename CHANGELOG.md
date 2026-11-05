@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-11-05
+
+### 修复
+
+- **`ass context` 永远显示「来源会话：未记录」**。`session` 字段一直存在，但只有调用方
+  显式传入时才写，而 agent 基本不会传 —— 于是想顺着一条决策去找它出自哪次会话，线索是断的。
+  现在记录时会自动关联「本仓库最近在写的那个会话」（MCP 的 `session_remember` 与 CLI 的
+  `ass context` / `ass note` 都生效），取不到才留空，不瞎填。
+  纯 CLI 的话也可用 `--session <引用>` 显式指定。
+- 新增 `ass context --set-session <编号> --session <引用>`：给**历史记录**补来源会话。
+- `ass context --backfill-session [--dry-run] [--window 10]`：按「记录时刻哪个会话**真的写过消息**」
+  反推历史记录的来源。用消息时间戳而不是会话时间窗——长会话的文件 mtime 会让多个时间窗互相覆盖，
+  等于没有信息；消息时间戳实测能精确到秒（样例里最近活动 0.1 分钟，第二名 24.7 分钟）。
+  只有明显领先（领先第二名 ≥1 分钟）才写入，并列的并行会话一律跳过并打印候选。
+- 顺带修：`--set-session` 之前不在 `VALUE_FLAGS` 里，会被当成布尔值解析。
+
 ## [1.0.1] — 2026-10-23
 
 ### 修复
@@ -318,7 +334,8 @@
 - Gemini CLI 的会话记录里没有仓库路径，只能通过 `ass list --all` 看到，无法按仓库过滤。
 - Trae / Windsurf / VS Code Copilot Chat 的存储结构还没摸清，`ass detect` 能找到库文件但不解析。
 
-[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.1...v1.0.0
 [0.4.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.0...v0.4.1

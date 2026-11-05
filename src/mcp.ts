@@ -422,6 +422,16 @@ const TOOLS: ToolDef[] = [
     },
     call(args) {
       const repo = repoOf(args)
+      // agent 通常不会自己传 session。自动取「本仓库最近在写的那个会话」——
+      // 记录这个动作就发生在它里面。取不到就留空，不瞎填。
+      const explicitSession = typeof args.session === 'string' && args.session.trim() ? args.session.trim() : undefined
+      const autoSession = explicitSession ?? (() => {
+        try {
+          return currentSession(repo, CFG)?.found.meta.key
+        } catch {
+          return undefined
+        }
+      })()
       const kinds: [string, ContextKind][] = [
         ['decision', 'decision'],
         ['dead_end', 'dead-end'],
@@ -434,7 +444,7 @@ const TOOLS: ToolDef[] = [
         if (args[flag] !== undefined && (typeof args[flag] !== 'string' || !String(args[flag]).trim())) throw new Error(`${flag} 需要笔记内容`)
       }
       const items = kinds
-        .map(([flag, kind]) => ({ kind, text: String(args[flag] ?? '').trim(), source: 'agent', relatedTo: typeof args.related_to === 'string' ? args.related_to : undefined, supersedes: typeof args.supersedes === 'string' ? args.supersedes : undefined, session: typeof args.session === 'string' ? args.session : undefined }))
+        .map(([flag, kind]) => ({ kind, text: String(args[flag] ?? '').trim(), source: 'agent', relatedTo: typeof args.related_to === 'string' ? args.related_to : undefined, supersedes: typeof args.supersedes === 'string' ? args.supersedes : undefined, session: autoSession }))
         .filter((x) => x.text)
       if ((args.related_to || args.supersedes) && !items.length) throw new Error('关联或替代需要同时提供新笔记内容')
       if (['done', 'cancel', 'reopen', 'remove', 'confirm', 'review'].filter((k) => args[k]).length > 1) throw new Error('每次只能选择一种状态或删除操作')
@@ -447,7 +457,7 @@ const TOOLS: ToolDef[] = [
         operation = { id: id.trim(), patch: {
           ...(action === 'review' ? { review: String(args.result) } : { [action]: true }),
           evidence: typeof args.evidence === 'string' ? args.evidence : undefined,
-          session: typeof args.session === 'string' ? args.session : undefined,
+          session: autoSession,
         } }
       }
       const change = items.length || operation ? applyContextChange(repo, items, operation) : null

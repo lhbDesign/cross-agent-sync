@@ -29,7 +29,7 @@ import {
   type TaskRecord,
   type TaskView,
 } from './core/task'
-import { applyContextChange, type ContextPatch, addContext, contextFile, contextLine, contextMarkdown, KIND_LABEL, REVIEW_LABEL, readContext, updateContext, type ContextKind } from './core/context'
+import { applyContextChange, type ContextPatch, addContext, contextFile, contextLine, contextMarkdown, KIND_LABEL, REVIEW_LABEL, readContext, setContextSession, updateContext, type ContextKind } from './core/context'
 import { LEVELS, estimateTokens, parseLevel } from './core/budget'
 import { armGuard, assertWritable, guardSummary, protectedPaths } from './core/roguard'
 import { buildAdapters } from './adapters/registry'
@@ -69,7 +69,7 @@ interface Args {
 const VALUE_FLAGS = [
   'repo', 'limit', 'agent', 'round', 'rounds', 'tail', 'since', 'out', 'summary', 'files', 'scan',
   'decision', 'decide', 'dead-end', 'deadend', 'constraint', 'todo', 'note', 'done', 'remove',
-  'label', 'goal', 'budget', 'tokens', 'session', 'suggestion', 'confirm', 'review', 'result', 'evidence', 'related-to', 'supersedes', 'cancel', 'reopen',
+  'label', 'goal', 'budget', 'tokens', 'session', 'set-session', 'window', 'suggestion', 'confirm', 'review', 'result', 'evidence', 'related-to', 'supersedes', 'cancel', 'reopen',
 ]
 
 /** 记录类参数：flag 名 → 条目类型 */
@@ -489,7 +489,7 @@ function cmdBrief(args: Args, cfg: Config): void {
 
 function cmdNote(args: Args, cfg: Config): void {
   const repo = (args.flags.repo as string) || process.cwd()
-  const items = CONTEXT_FLAGS.map(([flag, kind]) => ({ kind, text: String(args.flags[flag] ?? '').trim(), source: 'ass note' })).filter((x) => x.text)
+  const items = CONTEXT_FLAGS.map(([flag, kind]) => ({ kind, text: String(args.flags[flag] ?? '').trim(), source: 'ass note', session: sessionForRepo(repo, cfg, args.flags.session) })).filter((x) => x.text)
   if (items.length) {
     const { added } = addContext(repo, items)
     for (const a of added) console.log(`${c.green('已记录')} ${c.dim(a.id)} [${KIND_LABEL[a.kind]}] ${a.text}`)
@@ -511,12 +511,116 @@ function cmdNote(args: Args, cfg: Config): void {
   if (args.flags.json) console.log(JSON.stringify({ file: saved.file, slug: saved.slug }, null, 2))
 }
 
+/**
+ * 记录一条上下文时，来源会话从哪来：
+ *   1. 显式 --session 最优先；
+ *   2. 否则取「本仓库最近在写的那个会话」—— 记录这个动作基本就发生在它里面。
+ * 取不到就留空：宁可显示「未记录」，也不要瞎填一个。
+ */
+function sessionForRepo(repo: string, cfg: Config, explicit?: unknown): string | undefined {
+  if (typeof explicit === 'string' && explicit.trim()) return explicit.trim()
+  try {
+    return currentSession(repo, cfg)?.found.meta.key
+  } catch {
+    return undefined
+  }
+}
+
 function cmdContext(args: Args, cfg: Config): void {
   const repo = path.resolve((args.flags.repo as string) || process.cwd())
   for (const [flag] of CONTEXT_FLAGS) {
     if (args.flags[flag] !== undefined && (typeof args.flags[flag] !== 'string' || !String(args.flags[flag]).trim())) throw new Error(`--${flag} 需要笔记内容`)
   }
-  const items = CONTEXT_FLAGS.map(([flag, kind]) => ({ kind, text: String(args.flags[flag] ?? '').trim(), source: 'ass', relatedTo: typeof args.flags['related-to'] === 'string' ? args.flags['related-to'] : undefined, supersedes: typeof args.flags.supersedes === 'string' ? args.flags.supersedes : undefined, session: typeof args.flags.session === 'string' ? args.flags.session : undefined })).filter((x) => x.text)
+
+  // 手动指定某条记录的来源会话（历史数据兜底）。必须显式给 --session。
+  if (typeof args.flags['set-session'] === 'string') {
+    const id = args.flags['set-session']
+    const ref = typeof args.flags.session === 'string' ? args.flags.session.trim() : ''
+    if (!ref) return usageFail('--set-session 需要同时给 --session <会话引用>，例如 `ass context --set-session c3 --session claude:8dda036d`')
+    const e = setContextSession(repo, id, ref)
+    if (!e) return fail(`没找到记录：${id}`)
+    console.log(`${c.green('已设置来源会话')} ${c.cyan(e.id)} → ${e.session}`)
+    return
+  }
+
+  // 回溯补齐：早期记录没有 session。
+  // 判据不用「时间窗包含」——长会话的文件 mtime 会让多个窗口互相覆盖，等于没有信息。
+  // 改用「哪个会话在那前后**真的写过消息**」：每条消息都带时间戳，记录动作就发生在其活动里。
+  // 只有明显领先（领先第二名 ≥2 分钟）才写入；并列就跳过，不猜。
+  if (args.flags['backfill-session']) {
+    const windowMin = Number(args.flags.window || 10)
+    const dry = Boolean(args.flags['dry-run'])
+    const { sessions } = listSessions({ repo, limit: 0 }, cfg)
+    const targets = readContext(repo).entries.filter((e) => !e.session)
+    if (!targets.length) {
+      console.log('所有记录都已经有来源会话了。')
+      return
+    }
+    console.log(c.dim(`读取 ${sessions.length} 个会话的消息时间戳…`))
+    const stamps: { key: string; label: string; at: number[] }[] = []
+    for (const sm of sessions) {
+      const found = findSession(sm.key, cfg)
+      if (!found) continue
+      let turns: ReturnType<typeof readSession> = []
+      try {
+        turns = readSession(found)
+      } catch {
+        continue
+      }
+      const at = turns.map((t) => t.at).filter((x): x is number => typeof x === 'number').sort((a, b) => a - b)
+      if (at.length) stamps.push({ key: sm.key, label: sm.agentLabel, at })
+    }
+    const dist = (arr: number[], t: number): number => {
+      let lo = 0
+      let hi = arr.length - 1
+      if (t <= arr[0]!) return arr[0]! - t
+      if (t >= arr[hi]!) return t - arr[hi]!
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if (arr[mid]! < t) lo = mid + 1
+        else hi = mid
+      }
+      return Math.min(Math.abs(arr[lo]! - t), Math.abs(arr[lo - 1]! - t))
+    }
+    let filled = 0
+    let ambiguous = 0
+    let none = 0
+    for (const e of targets) {
+      const ranked = stamps.map((x) => ({ x, m: dist(x.at, e.at) / 60000 })).sort((a, b) => a.m - b.m)
+      const best = ranked[0]
+      const second = ranked[1]
+      if (!best || best.m > windowMin) {
+        none++
+        continue
+      }
+      if (second && second.m - best.m < 1) {
+        ambiguous++
+        console.log(
+          `  ${c.yellow(e.id)} 跳过：${best.x.key} 与 ${second.x.key} 几乎同时活动 ` +
+            c.dim(`(${best.m.toFixed(1)} / ${second.m.toFixed(1)} 分钟)`),
+        )
+        continue
+      }
+      if (!dry) setContextSession(repo, e.id, best.x.key)
+      console.log(`  ${c.cyan(e.id)} → ${best.x.key} ${c.dim(`（最近活动 ${best.m.toFixed(1)} 分钟，${best.x.label}）`)}`)
+      filled++
+    }
+    console.log('')
+    console.log(
+      `${dry ? c.yellow('[dry-run] ') : ''}${c.green('已补齐')} ${filled} 条` +
+        (ambiguous ? c.dim(`，${ambiguous} 条多个会话几乎同时活动（已跳过）`) : '') +
+        (none ? c.dim(`，${none} 条 ${windowMin} 分钟内没有会话活动`) : ''),
+    )
+    if (!dry) {
+      console.log('')
+      const md = contextMarkdown(repo, { includeDone: true })
+      if (md) console.log(md)
+    }
+    return
+  }
+
+  const entrySession = sessionForRepo(repo, cfg, args.flags.session)
+  const items = CONTEXT_FLAGS.map(([flag, kind]) => ({ kind, text: String(args.flags[flag] ?? '').trim(), source: 'ass', relatedTo: typeof args.flags['related-to'] === 'string' ? args.flags['related-to'] : undefined, supersedes: typeof args.flags.supersedes === 'string' ? args.flags.supersedes : undefined, session: entrySession })).filter((x) => x.text)
 
   if ((args.flags['related-to'] || args.flags.supersedes) && !items.length) throw new Error('关联或替代需要同时提供新笔记内容')
   if (['done', 'cancel', 'reopen', 'remove', 'confirm', 'review'].filter((k) => args.flags[k]).length > 1) throw new Error('每次只能选择一种状态或删除操作')
@@ -529,7 +633,7 @@ function cmdContext(args: Args, cfg: Config): void {
     operation = { id: id.trim(), patch: {
       ...(action === 'review' ? { review: String(args.flags.result) } : { [action]: true }),
       evidence: typeof args.flags.evidence === 'string' ? args.flags.evidence : undefined,
-      session: typeof args.flags.session === 'string' ? args.flags.session : undefined,
+      session: entrySession,
     } }
   }
   const result = items.length || operation ? applyContextChange(repo, items, operation) : { added: [], skipped: 0, updated: undefined, context: readContext(repo) }
@@ -1195,6 +1299,8 @@ ${c.bold('搬上下文')}
                           标记完成 --done <编号>，删除 --remove <编号>，包含已完成 --all，完整笔记 --details；来源会话 --session <引用>
                           关联记录 --related-to <编号>，新决策替代旧决策 --supersedes <编号>
                           取消待办 --cancel <编号>，重新打开 --reopen <编号>
+                          补历史来源会话 --set-session <编号> --session <引用>
+                          按时间回溯补齐 --backfill-session（仅唯一命中时写入）
                           建议 --suggestion "内容"；确认 --confirm <编号> --evidence "用户授权原话"
                           核对 --review <编号> --result completed|partial|pending|unknown --evidence "代码/测试依据"
   ass notes                已保存的交接记录列表

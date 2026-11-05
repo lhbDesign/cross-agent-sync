@@ -262,3 +262,55 @@ test('核对要求依据和合法结果，保存历史并独立于授权', () =>
   assert.equal(api.contextStats(repo).openTodos.length, 1)
   assert.match(api.contextMarkdown(repo), /无法确认/)
 })
+
+test('ass context：新记录自动带来源会话，--set-session 可手动改', () => {
+  // 以前 session 只有调用方显式传才写，而 agent 基本不会传 —— 于是永远显示「未记录」，
+  // 想顺着记录去找原会话就断了线索。
+  const out = run('context', '--repo', proj, '--decision', '自动带来源会话的验证')
+  assert.match(out, /已记录/)
+  const id = /已记录\s+(c\d+)/.exec(out)[1]
+  const listed = run('context', '--repo', proj)
+  assert.match(listed, /来源会话：claude:abcd-7777/, '应自动关联本仓库最近在写的会话')
+
+  const changed = run('context', '--repo', proj, '--set-session', id, '--session', 'claude:manual-set')
+  assert.match(changed, new RegExp(`已设置来源会话 ${id}`))
+  assert.match(run('context', '--repo', proj), /来源会话：claude:manual-set/)
+
+  let code = 0, msg = ''
+  try { run('context', '--repo', proj, '--set-session', id) } catch (e) { code = e.status; msg = String(e.stdout || '') }
+  assert.equal(code, 1, '缺 --session 应当非零退出')
+  assert.match(msg, /--set-session 需要同时给 --session/)
+})
+
+test('ass context --backfill-session：按最近消息活动反推来源会话', () => {
+  const h = fs.mkdtempSync(path.join(os.tmpdir(), 'ass-bf-'))
+  const repoDir = path.join(h, 'proj')
+  const claude = path.join(h, '.claude', 'projects', '-tmp-bf')
+  fs.mkdirSync(repoDir, { recursive: true })
+  fs.mkdirSync(claude, { recursive: true })
+
+  const T = Date.parse('2026-10-01T10:00:00.000Z')
+  const msg = (ts, text) =>
+    JSON.stringify({
+      type: 'user', cwd: repoDir, timestamp: ts, origin: { kind: 'human' },
+      message: { content: [{ type: 'text', text }] },
+    }) + '\n'
+  fs.writeFileSync(path.join(claude, 'aaaa-0001.jsonl'), msg('2026-10-01T10:00:00.000Z', '会话 A 的消息'))
+  fs.writeFileSync(path.join(claude, 'bbbb-0002.jsonl'), msg('2026-10-01T10:30:00.000Z', '会话 B 的消息'))
+
+  // 手写一份历史记录：发生在 T，且没有 session
+  const dir = path.join(h, 'data', 'handoffs', 'proj')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'context.json'), JSON.stringify({
+    repo: repoDir, updatedAt: T,
+    entries: [{ id: 'c1', at: T, kind: 'decision', text: '测试决策', source: 'ass' }],
+  }))
+
+  const e = { ...process.env, ASS_HOME: h, ASS_CONFIG_DIR: path.join(h, 'config'), ASS_DATA_DIR: path.join(h, 'data') }
+  const cli = path.resolve('dist/cli.js')
+  const out = execFileSync(process.execPath, [cli, 'context', '--repo', repoDir, '--backfill-session', '--dry-run'], { env: e, encoding: 'utf8' })
+
+  assert.match(out, /c1 → claude:aaaa-0001/, '应识别出记录时刻真正活跃的会话')
+  assert.doesNotMatch(out, /bbbb-0002/, '半小时后的会话不该被选中')
+  fs.rmSync(h, { recursive: true, force: true })
+})

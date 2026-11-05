@@ -1,6 +1,6 @@
 {
   "name": "cross-agent-sync",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Cross-agent session sync with built-in readers for Claude Code, Codex, Cursor, and OpenCode, plus detection and custom adapters for other agents.",
   "repository": {
     "type": "git",

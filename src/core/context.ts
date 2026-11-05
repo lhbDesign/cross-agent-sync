@@ -188,6 +188,25 @@ export function updateContext(repoDir: string, id: string, patch: ContextPatch):
   return applyContextChange(repoDir, [], { id, patch }, false).updated ?? null
 }
 
+/**
+ * 给已有记录补上来源会话。
+ *
+ * 专门用于「历史数据回溯」：`session` 字段一直存在，但早期版本只在调用方显式传入时才写，
+ * 而 agent 通常不会传 —— 于是 `ass context` 里全是「来源会话：未记录」，
+ * 想顺着这条记录去找原会话就断了线索。
+ */
+export function setContextSession(repoDir: string, id: string, session: string): ContextEntry | null {
+  const s = String(session || '').trim()
+  if (!s) return null
+  const ctx = readContext(repoDir)
+  const e = ctx.entries.find((x) => x.id === id)
+  if (!e || e.session === s) return e ?? null
+  e.session = s
+  ctx.updatedAt = Date.now()
+  writeJsonFile(contextFile(repoDir), ctx)
+  return e
+}
+
 export interface ContextStats {
   decisions: ContextEntry[]
   deadEnds: ContextEntry[]

@@ -13,3 +13,11 @@ dist/
 
 # 分享用的演示文稿（HTML/PPT），不随包发布
 slides/
+share-kit/
+share-deck/
+
+# 新版项目分享材料与生成过程
+/presentation-studio/
+
+# 个人需求文档，不随仓库/发布包分发
+提示词.md
