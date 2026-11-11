@@ -52,6 +52,29 @@ function available(): boolean {
   }
 }
 
+/**
+ * 库变更指纹。Cursor 的 list 是**全库聚合查询**（本机实测 15s+），
+ * 但内容没变时没必要重扫。
+ *
+ * 不用文件 mtime：Cursor 应用常驻时会持续写 -wal，mtime 一直在变，缓存几乎必然失效。
+ * 改用「会话条数 + 最近更新时间」这种内容指纹；workspaceStorage 的 mtime 只影响
+ * 仓库路径解析（新建 workspace.json 时会变）。强制重扫用 `--no-cache`。
+ */
+function dbStamp(d: Db): string | null {
+  try {
+    const r = d.query<{ c: number; m: number }>(
+      `select count(*) as c, max(lastUpdatedAt) as m from composerHeaders`,
+    )[0]
+    let s = `${Number(r?.c) || 0}:${Number(r?.m) || 0}`
+    try {
+      s += `:ws${fs.statSync(WS_DIR).mtimeMs}`
+    } catch { /* ignore */ }
+    return s
+  } catch {
+    return null
+  }
+}
+
 /** displayPath 形如 `~/Desktop/work/x`（也可能是绝对路径） */
 function expandTilde(p: string): string {
   return p.startsWith('~/') ? path.join(HOME, p.slice(2)) : p
@@ -121,9 +144,12 @@ function bubbleStats(d: Db): Map<string, { bubbles: number; turns: number }> {
   return out
 }
 
-function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
+function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
   const d = db()
   if (!d) return []
+  const stamp = dbStamp(d)
+  const cached = ctx.cache.sessions as { stamp: string; list: SessionMeta[] } | undefined
+  if (stamp && cached?.stamp === stamp && Array.isArray(cached.list)) return cached.list
   const stats = bubbleStats(d)
   let rows: Record<string, any>[] = []
   try {
@@ -191,6 +217,7 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
       extra: { workspaceId: String(r.workspaceId || '') },
     })
   }
+  if (stamp) ctx.cache.sessions = { stamp, list: out }
   return out
 }
 

@@ -183,11 +183,25 @@ function cmdStatus(args: Args, cfg: Config): void {
   const truncated = raw.length > limit
   const sessions = truncated ? raw.slice(0, limit) : raw
   const repoDir = sessions[0]?.repo || repo || process.cwd()
+  const tasks = taskList({ repo: all ? null : repoDir })
+  const ctxLine = all ? '' : contextLine(repoDir)
+  const note = all ? null : latestNote(repoDir)
+
+  // GUI 用的结构化出口
+  if (args.flags.json) {
+    // 每个会话的「在原 agent 里继续」命令（适配器提供，Cursor/OpenCode 可能没有）
+    const resume: Record<string, string> = {}
+    for (const s of sessions) {
+      const a = adapters.find((x) => x.id === s.agent)
+      const cmd = a?.resumeCmd?.(s)
+      if (cmd) resume[s.key] = cmd
+    }
+    console.log(JSON.stringify({ repo: repoDir, all, sessions, truncated, errors, tasks, contextLine: ctxLine, note, resume }, null, 2))
+    return
+  }
 
   console.log(c.bold(all ? '全部仓库' : `仓库 ${repoDir}`))
 
-  const tasks = taskList({ repo: all ? null : repoDir })
-  const ctxLine = all ? '' : contextLine(repoDir)
   const head = [truncated ? `显示最近 ${sessions.length} 个会话（还有更多）` : `${sessions.length} 个会话`]
   if (tasks.length) head.push(`${tasks.length} 个工作任务`)
   console.log(c.dim(head.join(' · ')))
@@ -302,7 +316,6 @@ function cmdStatus(args: Args, cfg: Config): void {
       c.dim('看哪几段其实在做同一件事 —— 判断由你下，工具不猜'),
   )
   // 跨仓库时「本仓库的交接记录」没有意义，不显示
-  const note = all ? null : latestNote(repoDir)
   console.log(c.dim(`交接记录     ass notes${note ? `                        上次收尾 ${fmtTime(note.entry.at)}` : ''}`))
   if (truncated) {
     const more = Math.max(limit * 4, 60)
@@ -379,6 +392,31 @@ function cmdShow(args: Args, cfg: Config): void {
   const found = findSession(ref, cfg)
   if (!found) return usage(`没找到会话：${ref}`)
   const s = found.meta
+
+  // GUI 用：完整的用户 + 助手消息。附件只给数量和文件名，不内联 base64。
+  if (args.flags.json) {
+    const tail = args.flags.full ? undefined : Number(args.flags.tail || 6)
+    const turns = readSession(found, tail ? { tail } : {})
+    console.log(
+      JSON.stringify(
+        {
+          session: s.key,
+          meta: s,
+          turns: turns.map(({ role, text, at, images, files }) => ({
+            role,
+            text,
+            at,
+            images: images?.length || 0,
+            files: (files || []).map((f) => f.name),
+          })),
+        },
+        null,
+        2,
+      ),
+    )
+    return
+  }
+
   console.log(c.bold(`${s.agentLabel}  ${s.key}`))
   console.log(`标题    ${s.title}`)
   if (s.preview) console.log(`最近    ${plain(s.preview, 160)}`)
@@ -1070,18 +1108,44 @@ function cmdNotes(args: Args): void {
 }
 
 function cmdAgents(args: Args, cfg: Config): void {
-  const status = agentStatus(cfg)
+  // --fast：跳过「数会话」这步扫描，只探测可用性（GUI 首屏用）
+  const status = agentStatus(cfg, { count: !args.flags.fast })
   const detected = detectAgents()
-  for (const { adapter, available, found, error } of status) {
+  // JSON 必须**先返回**：以前是打完人类可读文本再打 JSON，调用方 JSON.parse 必然失败
+  if (args.flags.json) {
+    console.log(
+      JSON.stringify(
+        status.map(({ adapter, available, found, counted, error }) => {
+          const d = detected.find((x) => x.id === adapter.id)
+          return {
+            id: adapter.id,
+            label: adapter.label,
+            available,
+            found,
+            counted,
+            error,
+            sources: adapter.sources(),
+            hint: adapter.hint,
+            installed: d?.installed ?? false,
+            exists: d?.exists ?? false,
+            config: d?.config,
+          }
+        }),
+        null,
+        2,
+      ),
+    )
+    return
+  }
+  for (const { adapter, available, found, counted, error } of status) {
     const mark = available ? c.green('●') : c.dim('○')
-    const state = error ? c.yellow(`读取失败: ${error}`) : available ? c.dim(`${found} 个会话`) : c.dim('未安装 / 没有数据')
+    const state = error ? c.yellow(`读取失败: ${error}`) : available ? c.dim(counted ? `${found} 个会话` : '快速模式（未计数）') : c.dim('未安装 / 没有数据')
     const hook = detected.find((d) => d.id === adapter.id)
     const hooked = hook?.installed ? c.green(' [MCP 已接入]') : hook?.exists ? c.dim(' [MCP 未接入]') : ''
     console.log(`${mark} ${c.cyan(adapter.id.padEnd(10))} ${adapter.label.padEnd(14)} ${state}${hooked}`)
     for (const s of adapter.sources()) console.log(`  ${c.dim(s)}`)
     if (!available && adapter.hint) console.log(`  ${c.dim(adapter.hint)}`)
   }
-  if (args.flags.json) console.log(JSON.stringify(status.map((s) => ({ id: s.adapter.id, available: s.available, found: s.found, error: s.error })), null, 2))
 }
 
 function cmdDetect(args: Args, cfg: Config): void {
@@ -1127,18 +1191,19 @@ function cmdDetect(args: Args, cfg: Config): void {
 
 function cmdRepos(args: Args, cfg: Config): void {
   const { sessions } = listSessions({ includeAll: true }, cfg)
-  const byRepo = new Map<string, { n: number; agents: Set<string>; last: number }>()
+  const byRepo = new Map<string, { n: number; agents: Set<string>; byAgent: Record<string, number>; last: number }>()
   for (const s of sessions) {
     const key = s.repo || s.cwd || '(未知)'
-    const e = byRepo.get(key) || { n: 0, agents: new Set<string>(), last: 0 }
+    const e = byRepo.get(key) || { n: 0, agents: new Set<string>(), byAgent: {}, last: 0 }
     e.n++
     e.agents.add(s.agent)
+    e.byAgent[s.agent] = (e.byAgent[s.agent] || 0) + 1
     e.last = Math.max(e.last, s.updatedAt || s.startedAt || 0)
     byRepo.set(key, e)
   }
   const rows = [...byRepo].sort((a, b) => b[1].last - a[1].last)
   if (args.flags.json) {
-    console.log(JSON.stringify(rows.map(([r, v]) => ({ repo: r, sessions: v.n, agents: [...v.agents] })), null, 2))
+    console.log(JSON.stringify(rows.map(([r, v]) => ({ repo: r, sessions: v.n, agents: [...v.agents], byAgent: v.byAgent })), null, 2))
     return
   }
   for (const [repo, v] of rows) {

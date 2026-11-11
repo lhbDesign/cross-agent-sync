@@ -21,3 +21,12 @@ share-deck/
 
 # 个人需求文档，不随仓库/发布包分发
 提示词.md
+
+# 桌面应用（Electron）构建产物
+desktop/node_modules/
+desktop/runtime/
+desktop/release/
+desktop/assets/*.icns
+desktop/assets/*.ico
+desktop/assets/*.png
+desktop/assets/*.iconset/

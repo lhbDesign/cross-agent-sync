@@ -1,0 +1,26 @@
+{
+  "name": "agent-session-sync-desktop",
+  "productName": "Agent Session Sync",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "跨 Agent 会话同步 — 桌面版",
+  "main": "electron/main.mjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "icon": "node scripts/make-icon.mjs",
+    "dev": "npm run prepare:runtime && electron .",
+    "smoke": "npm run prepare:runtime && node scripts/smoke.mjs",
+    "dist": "npm run prepare:runtime && npm run icon && electron-builder --mac dmg",
+    "dist:win": "npm run prepare:runtime && npm run icon && electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3",
+    "electron-builder": "^26.0.12",
+    "pe-library": "^2.0.1",
+    "resedit": "^3.1.0"
+  }
+}

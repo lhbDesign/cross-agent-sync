@@ -93,24 +93,27 @@ export function listSessions(opts: ListOptions = {}, cfg: Config = loadConfig())
 }
 
 /** 各 adapter 的可用性 + 数据源（`ass agents` / `ass doctor` 用） */
-export function agentStatus(cfg: Config = loadConfig()): {
+export function agentStatus(cfg: Config = loadConfig(), opts: { count?: boolean } = {}): {
   adapter: Adapter
   available: boolean
   found: number
+  counted: boolean
   error?: string
 }[] {
-  const out: { adapter: Adapter; available: boolean; found: number; error?: string }[] = []
+  const out: { adapter: Adapter; available: boolean; found: number; counted: boolean; error?: string }[] = []
   for (const a of buildAdapters(cfg, { includeUnavailable: true })) {
     let available = false
     let found = 0
     let error: string | undefined
     try {
       available = a.available()
-      if (available) found = a.list({}, { cache: {} }).length
+      // --fast：只判断可用性。数会话要扫全库（Cursor 单库实测 15s+），
+      // GUI 首屏不能等它，会从项目列表里补出计数。
+      if (available && opts.count !== false) found = a.list({}, { cache: {} }).length
     } catch (e) {
       error = errMsg(e)
     }
-    out.push({ adapter: a, available, found, error })
+    out.push({ adapter: a, available, found, counted: available && opts.count !== false, error })
   }
   return out
 }

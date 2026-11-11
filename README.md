@@ -185,6 +185,83 @@ Requires Node >= 18.17. For SQLite-based agents (Cursor / OpenCode), pick one:
 If neither is available, `ass agents` tells you clearly that Cursor/OpenCode cannot be read —
 it does not fail silently.
 
+> Prefer a GUI? There is a desktop app for macOS / Windows — see **Desktop app** below.
+
+---
+
+## Desktop app (macOS / Windows)
+
+The desktop app wraps the same core in a visual UI: local stats, per-project sessions / tasks / notes,
+handoff briefs and decision recording. The read/write boundary is identical to the CLI:
+**agent session data is read-only**; every write goes to the tool's own data directory and asks for confirmation first.
+
+### Download
+
+Grab an installer from **GitHub Releases**:
+
+<https://github.com/lhbDesign/cross-agent-sync/releases>
+
+| Platform | File | Notes |
+| --- | --- | --- |
+| macOS (Apple Silicon) | `Agent-Session-Sync-<version>-arm64.dmg` | drag into Applications |
+| Windows (x64) | `Agent-Session-Sync-<version>-setup-x64.exe` | NSIS installer, custom install dir supported |
+| Windows portable | `Agent-Session-Sync-<version>-win-x64.zip` | unzip and run the `.exe` |
+
+> Only **macOS arm64** and **Windows x64** are provided today. Intel Macs / Windows ARM need a local build.
+> The desktop app is distributed as GitHub Release artifacts and is **not part of the npm package**.
+
+### Install
+
+**macOS**
+
+1. Open the DMG and drag **Agent Session Sync** into `Applications`.
+2. Eject the DMG, then **right-click → Open** from Applications (do not double-click the first time).
+3. If macOS says the developer cannot be verified: **System Settings → Privacy & Security → Open Anyway**.
+4. If it says the app is damaged (usually an old or corrupted copy):
+
+   ```bash
+   xattr -cr "/Applications/Agent Session Sync.app"
+   ```
+
+   then right-click → Open again.
+
+**Windows**
+
+1. Run `setup-x64.exe` (you can change the install directory).
+2. The build is unsigned, so SmartScreen may warn on first launch:
+   **More info → Run anyway**.
+3. Alternatively, unzip the portable build and run `Agent Session Sync.exe`.
+
+### What's inside
+
+- **Overview**: detected agents, total sessions, project count, disk usage; use **Refresh** to rescan.
+- **Project**: type or pick a project directory, then browse sessions, tasks and project notes.
+  Click a session to switch between:
+  - user inputs (verbatim, no summarization)
+  - all messages (user + assistant)
+  - assistant replies (summary / full text)
+- **All projects**: project cards with agent badges; click through to details.
+- **Settings**: data directory, MCP config path, app and runtime versions.
+- **Actions**: generate a handoff brief (copy / export `.md`), view user inputs, copy the resume command,
+  save a handoff note, record a note, create a task. Every write asks for confirmation and names the target.
+
+The first launch scans local sessions; a cold scan of a large Cursor library takes about 15–22 seconds,
+then later launches reuse the index cache and open almost instantly.
+
+### Build from source
+
+```bash
+cd desktop
+nvm use            # Node >= 22.12 (see desktop/.nvmrc)
+npm install
+npm run dev        # open the app
+npm run dist       # macOS DMG
+npm run dist:win   # Windows NSIS installer + portable zip
+```
+
+Architecture and packaging details (ad-hoc signing, Windows cross-build, icon generation) live in
+[`desktop/README.md`](https://github.com/lhbDesign/cross-agent-sync/blob/main/desktop/README.md).
+
 ---
 
 ## Quick start
@@ -595,6 +672,17 @@ npm run typecheck
 npm test           # build + node --test
 ```
 
+The desktop app lives in `desktop/` (Electron, no frontend framework):
+
+```bash
+cd desktop
+nvm use            # Node >= 22.12 (see desktop/.nvmrc)
+npm install
+npm run dev        # open the window (copies dist/ into runtime/ first)
+npm run dist       # macOS DMG
+npm run dist:win   # Windows NSIS installer + portable zip
+```
+
 Three layers — adding an agent is one file:
 
 ```
@@ -617,6 +705,7 @@ src/cli.ts          CLI          src/mcp.ts   MCP server
 - [x] **P2** Automatic handoff: Claude Code / Cursor native hooks, generic runner, status and retry
 - [x] **M5a** npm package & publish (0.3.0 shipped)
 - [x] **M5b** CI workflow: typecheck, regression tests, package verification
+- [x] **Desktop app**: macOS DMG (arm64) + Windows NSIS / portable zip (Electron)
 - [ ] TBD: Trae / Windsurf / VS Code Copilot Chat storage layouts (`ass detect` already finds DB files)
 
 ## License

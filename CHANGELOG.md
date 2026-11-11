@@ -4,6 +4,34 @@
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-11-11
+
+### 新增
+
+- **桌面应用（macOS / Windows）**：Electron 界面，支持本机统计、按项目查看会话 / 任务 / 项目笔记、
+  生成交接摘要、记录决策、新建任务。macOS 产出 DMG（arm64 + ad-hoc 签名），
+  Windows 产出 NSIS 安装包与免安装 zip（x64）。桌面版不包含在 npm 包里，通过 GitHub Releases 分发。
+- **`ass agents --fast`**：只探测 agent 可用性，不扫描会话数。Cursor 全库扫描较慢，GUI 首屏用它；
+  会话数随后从 `repos --json` 的 `byAgent` 汇总。默认 `ass agents` 行为不变。
+- **`ass show <引用> --json --full`**：输出用户与助手的完整消息（附件只给数量和文件名，
+  不内联 base64），供桌面端切换「用户输入 / 全部信息 / 智能体回答」。
+- **`ass status --json`**：输出结构化的会话、任务、项目笔记与恢复命令（`resume` 字段）。
+- **`ass agents --json`**：改为纯 JSON 输出，并补充 `sources` / `installed` / `config` / `counted`。
+- **`ass repos --json`**：每条项目记录新增 `byAgent`（各 agent 的会话数）。
+
+### 修复
+
+- **Cursor 会话列表重复扫描慢**：列表缓存改用内容指纹（`composerHeaders` 条数 +
+  `max(lastUpdatedAt)` + `workspaceStorage` mtime），不再依赖持续变化的 WAL 文件 mtime。
+  实测冷扫描 15–22s → 热读约 0.4s；`--no-cache` 仍可强制重扫。
+- 桌面版磁盘统计的 Cursor `workspaceStorage` 路径改为从 adapter 的 `sources()` 推导，
+  macOS / Windows 通用。
+
+### 文档
+
+- README 增加「桌面应用」章节：下载、macOS / Windows 安装、功能说明与源码构建方式。
+- 新增 `desktop/README.md`：架构、开发、打包（macOS ad-hoc 签名、Windows 交叉构建）说明。
+
 ## [1.1.0] — 2026-11-05
 
 ### 修复

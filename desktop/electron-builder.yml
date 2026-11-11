@@ -1,0 +1,72 @@
+appId: com.lihaibo.agent-session-sync
+productName: Agent Session Sync
+copyright: MIT
+
+directories:
+  output: release
+  buildResources: assets
+
+files:
+  - electron/**/*
+  - ui/**/*
+  - package.json
+
+# 必须在打 DMG 之前签，否则 DMG 里那份是未签名的（Apple Silicon 会报「已损坏」）
+afterPack: scripts/after-pack.cjs
+
+extraResources:
+  - from: runtime
+    to: runtime
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64]
+  category: public.app-category.developer-tools
+  icon: assets/icon.icns
+  # 不购买 Apple 开发者账号：不做 Developer ID 签名。
+  # 构建后由 scripts/after-pack.cjs 补 ad-hoc 签名（Apple Silicon 必需）。
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  darkModeSupport: true
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: zip
+      arch: [x64]
+  icon: assets/icon.ico
+  # zip 等非 nsis 产物；nsis 会用自己的 artifactName 覆盖
+  artifactName: Agent-Session-Sync-${version}-win-${arch}.${ext}
+  # macOS 上没有 wine，electron-builder 的 rcedit 无法运行。
+  # 跳过内置的 exe 资源编辑，由 scripts/after-pack.cjs 用纯 JS 的 resedit 补图标/版本。
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Agent Session Sync
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+  artifactName: Agent-Session-Sync-${version}-setup-${arch}.${ext}
+
+dmg:
+  title: Agent Session Sync
+  artifactName: Agent-Session-Sync-${version}-${arch}.${ext}
+  contents:
+    - x: 140
+      y: 200
+      type: file
+    - x: 420
+      y: 200
+      type: link
+      path: /Applications
+    - x: 140
+      y: 360
+      type: file
+      path: 安装说明.md

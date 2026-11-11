@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+<title>Agent Session Sync</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-title">Agent Session Sync</div>
+        <div class="brand-sub">跨 Agent 会话同步</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item active" data-tab="overview">
+        <span class="nav-ico">◫</span><span>概览</span>
+      </button>
+      <button class="nav-item" data-tab="project">
+        <span class="nav-ico">▤</span><span>项目</span>
+      </button>
+      <button class="nav-item" data-tab="all">
+        <span class="nav-ico">⊞</span><span>全部项目</span>
+      </button>
+      <button class="nav-item" data-tab="settings">
+        <span class="nav-ico">⚙</span><span>设置</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="dot-live"></div>
+      <span id="side-status">正在扫描…</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title" id="view-title">概览</div>
+      <div class="topbar-actions">
+        <button class="btn ghost" id="btn-refresh">刷新</button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- 概览 -->
+      <section class="view active" id="view-overview">
+        <div class="kpis" id="kpis"></div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Agent 数据源</h2>
+            <span class="muted" id="agents-hint"></span>
+          </div>
+          <div class="table agent-table" id="agent-table"></div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head"><h2>会话数分布</h2></div>
+            <div class="chart" id="chart-sessions"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>磁盘占用</h2></div>
+            <div class="chart" id="chart-disk"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 项目 -->
+      <section class="view" id="view-project">
+        <div class="picker">
+          <input id="repo-input" class="input" placeholder="输入项目目录，或点击右侧选择…" spellcheck="false" />
+          <button class="btn" id="btn-pick">选择目录</button>
+          <button class="btn primary" id="btn-load">加载</button>
+        </div>
+
+        <div id="project-empty" class="empty">
+          <div class="empty-ico">▤</div>
+          <p>选一个项目目录，查看它的会话、任务与笔记。</p>
+        </div>
+
+        <div id="project-body" class="hidden">
+          <div class="kpis" id="project-kpis"></div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>会话</h2>
+              <span class="muted" id="sessions-count"></span>
+            </div>
+            <div class="table sessions-table" id="sessions-table"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>任务</h2>
+              <button class="btn small" id="btn-task-new">新建任务</button>
+            </div>
+            <div id="tasks-list" class="tasks"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>项目笔记</h2>
+              <button class="btn small" id="btn-note-add">记录一条</button>
+            </div>
+            <div id="notes-list" class="notes"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h2>指令</h2></div>
+            <div class="actions">
+              <button class="btn" data-act="brief">生成交接摘要</button>
+              <button class="btn" data-act="inputs">查看用户输入</button>
+              <button class="btn" data-act="resume">复制恢复命令</button>
+              <button class="btn" data-act="note">保存交接记录</button>
+              <button class="btn" data-act="reveal">在 Finder 中显示</button>
+              <button class="btn" data-act="open-data">打开数据目录</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 全部项目 -->
+      <section class="view" id="view-all">
+        <div class="toolbar">
+          <input id="all-search" class="input narrow" placeholder="搜索项目…" spellcheck="false" />
+          <div class="chips" id="agent-chips"></div>
+        </div>
+        <div id="repos-grid" class="repo-grid"></div>
+        <div id="repos-empty" class="empty hidden">
+          <div class="empty-ico">⊞</div>
+          <p>还没有扫描到任何项目。</p>
+        </div>
+      </section>
+
+      <!-- 设置 -->
+      <section class="view" id="view-settings">
+        <div class="panel">
+          <div class="panel-head"><h2>路径</h2></div>
+          <dl class="kv" id="settings-paths"></dl>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>版本</h2></div>
+          <dl class="kv" id="settings-versions"></dl>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>只读边界</h2></div>
+          <p class="prose">
+            本应用对 <strong>Agent 的会话数据严格只读</strong>：不会修改 Claude / Codex / Cursor / OpenCode 的任何会话文件。
+            所有写操作（记录决策、建任务、保存交接）只写入本工具自己的数据目录。
+          </p>
+          <p class="prose muted">
+            MCP 接入请使用命令行 <code>ass install</code>。本应用不会代跑，因为那会把 Electron 二进制写进 MCP 配置。
+          </p>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<!-- 会话详情抽屉 -->
+<div class="drawer-mask hidden" id="drawer-mask"></div>
+<aside class="drawer hidden" id="drawer">
+  <div class="drawer-head">
+    <div>
+      <div class="drawer-title" id="drawer-title">会话</div>
+      <div class="drawer-sub" id="drawer-sub"></div>
+    </div>
+    <button class="btn ghost icon" id="drawer-close">✕</button>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+
+<!-- 通用弹窗 -->
+<div class="modal-mask hidden" id="modal-mask">
+  <div class="modal" id="modal">
+    <h3 id="modal-title"></h3>
+    <p class="modal-desc" id="modal-desc"></p>
+    <div id="modal-fields"></div>
+    <div class="modal-actions" id="modal-actions">
+      <button class="btn ghost" id="modal-cancel">取消</button>
+      <button class="btn primary" id="modal-ok">确定</button>
+    </div>
+  </div>
+</div>
+
+<div class="loading hidden" id="loading"><div class="spinner"></div><span id="loading-text">扫描中…</span></div>
+<div class="toast hidden" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

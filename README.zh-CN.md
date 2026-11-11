@@ -177,6 +177,81 @@ npx cross-agent-sync list              # 直接用，不安装
 
 两个都没有时，`ass agents` 会明确告诉你 Cursor/OpenCode 读不了，而不是静默失败。
 
+> 不想用终端也可以装桌面版（macOS / Windows），见下方「桌面应用」。
+
+---
+
+## 桌面应用（macOS / Windows）
+
+桌面版把核心能力做成了可视化界面：本机统计、按项目看会话 / 任务 / 项目笔记、生成交接摘要、记录决策。
+读写边界与 CLI 完全一致：**agent 会话数据只读**，所有写操作只写入工具自己的数据目录，并且执行前都会弹确认。
+
+### 下载
+
+从 **GitHub Releases** 下载安装包：
+
+<https://github.com/lhbDesign/cross-agent-sync/releases>
+
+| 平台 | 文件 | 说明 |
+| --- | --- | --- |
+| macOS（Apple Silicon） | `Agent-Session-Sync-<版本>-arm64.dmg` | 拖进「应用程序」 |
+| Windows（x64） | `Agent-Session-Sync-<版本>-setup-x64.exe` | NSIS 安装包，可改安装目录 |
+| Windows 免安装 | `Agent-Session-Sync-<版本>-win-x64.zip` | 解压后直接运行 `.exe` |
+
+> 目前只提供 **macOS arm64** 和 **Windows x64**。Intel Mac / Windows ARM 需要自行构建。
+> 桌面版通过 GitHub Releases 分发，**不包含在 npm 包里**。
+
+### 安装
+
+**macOS**
+
+1. 双击 DMG，把 **Agent Session Sync** 拖进 `Applications`。
+2. **先推出 DMG**，再从「应用程序」里 **右键 → 打开**（不要直接双击）。
+3. 如果提示「无法验证开发者」：**系统设置 → 隐私与安全性 → 仍要打开**。
+4. 如果提示「已损坏」（通常是旧包或传输损坏的副本）：
+
+   ```bash
+   xattr -cr "/Applications/Agent Session Sync.app"
+   ```
+
+   然后再右键 → 打开。
+
+**Windows**
+
+1. 双击 `setup-x64.exe` 安装（可以修改安装目录）。
+2. 构建没有代码签名，首次运行可能触发 SmartScreen：
+   点「更多信息 → 仍要运行」。
+3. 或者解压免安装版，直接运行 `Agent Session Sync.exe`。
+
+### 怎么用
+
+- **概览**：检测到的 Agent、会话总数、项目数、磁盘占用；点右上角「刷新」重新扫描。
+- **项目**：输入或选择项目目录，查看会话、任务、项目笔记。
+  点某个会话，右侧可以切换：
+  - 用户输入（原样，不摘要）
+  - 全部信息（用户 + 智能体）
+  - 智能体回答（摘要 / 全文）
+- **全部项目**：按项目卡片浏览，带 Agent 徽章，点进去看详情。
+- **设置**：数据目录、MCP 配置路径、应用与运行时版本。
+- **指令按钮**：生成交接摘要（复制 / 导出 `.md`）、查看用户输入、复制恢复命令、保存交接记录、记录笔记、新建任务。
+  所有写操作都会先弹确认，并写明写入目标。
+
+首次打开会扫描本机会话；Cursor 大库的冷扫描约 15–22 秒，之后走索引缓存，基本秒开。
+
+### 从源码构建桌面版
+
+```bash
+cd desktop
+nvm use            # 需要 Node >= 22.12（见 desktop/.nvmrc）
+npm install
+npm run dev        # 打开应用
+npm run dist       # macOS DMG
+npm run dist:win   # Windows NSIS 安装包 + 免安装 zip
+```
+
+架构与打包细节（ad-hoc 签名、Windows 交叉构建、图标生成）见
+[`desktop/README.md`](https://github.com/lhbDesign/cross-agent-sync/blob/main/desktop/README.md)。
+
 ---
 
 ## 快速开始
@@ -585,6 +660,17 @@ npm run typecheck
 npm test           # 构建 + node --test
 ```
 
+桌面应用在 `desktop/`（Electron，不依赖前端框架）：
+
+```bash
+cd desktop
+nvm use            # Node >= 22.12（见 desktop/.nvmrc）
+npm install
+npm run dev        # 打开窗口（会先把 dist/ 复制成 runtime/）
+npm run dist       # macOS DMG
+npm run dist:win   # Windows NSIS 安装包 + 免安装 zip
+```
+
 架构分三层，加一个 agent 只要写一个文件：
 
 ```
@@ -607,6 +693,7 @@ src/cli.ts          命令行          src/mcp.ts   MCP server
 - [x] **P2** 自动交接：Claude Code / Cursor 原生钩子、通用入口、状态与重试
 - [x] **M5a** npm 打包与发布（0.3.0 已发布）
 - [x] **M5b** CI 工作流：类型检查、回归测试及打包验证
+- [x] **桌面应用**：macOS DMG（arm64）+ Windows NSIS / 免安装 zip（Electron）
 - [ ] 待摸清：Trae / Windsurf / VS Code Copilot Chat 的存储结构（`ass detect` 已能找到库文件）
 
 ## License
