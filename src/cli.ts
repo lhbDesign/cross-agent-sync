@@ -128,7 +128,8 @@ function printList(sessions: SessionMeta[], opts: { showRepo: boolean }): void {
     const turns = s.turns ? c.dim(`${s.turns}轮`) : s.bubbles ? c.dim(`${s.bubbles}条`) : ''
     const label = repoLabel(s)
     const repo = opts.showRepo && label ? c.dim(` [${label}]`) : ''
-    console.log(`${idx} ${agent} ${c.dim(time)}  ${plain(s.title, 46)}${repo} ${turns}`)
+    const partial = s.extra?.partial ? c.yellow(' ·部分') : ''
+    console.log(`${idx} ${agent} ${c.dim(time)}  ${plain(s.title, 46)}${repo} ${turns}${partial}`)
     if (s.preview) console.log(`${' '.repeat(w)} ${c.dim(' '.repeat(9) + ' ' + plain(s.preview, 100))}`)
   })
 }
@@ -426,6 +427,7 @@ function cmdShow(args: Args, cfg: Config): void {
   console.log(`规模    ${s.turns} 轮 / ${s.bubbles} 条消息`)
   if (s.model) console.log(`模型    ${s.model}`)
   console.log(`来源    ${s.source}`)
+  if (s.extra?.partial) console.log(c.yellow('注意    该会话只有部分内容（加密库 / 仅输入历史 / 摘要），不是完整对话'))
   if (found.adapter.resumeCmd) console.log(`继续    ${c.green(found.adapter.resumeCmd(s))}`)
 
   console.log(c.dim('对话记录：已解析的用户和助手消息；工具返回等部分原始日志内容可能不包含在内。'))
@@ -1142,7 +1144,7 @@ function cmdAgents(args: Args, cfg: Config): void {
     const state = error ? c.yellow(`读取失败: ${error}`) : available ? c.dim(counted ? `${found} 个会话` : '快速模式（未计数）') : c.dim('未安装 / 没有数据')
     const hook = detected.find((d) => d.id === adapter.id)
     const hooked = hook?.installed ? c.green(' [MCP 已接入]') : hook?.exists ? c.dim(' [MCP 未接入]') : ''
-    console.log(`${mark} ${c.cyan(adapter.id.padEnd(10))} ${adapter.label.padEnd(14)} ${state}${hooked}`)
+    console.log(`${mark} ${c.cyan(adapter.id.padEnd(10))} ${adapter.label.padEnd(18)} ${state}${hooked}`)
     for (const s of adapter.sources()) console.log(`  ${c.dim(s)}`)
     if (!available && adapter.hint) console.log(`  ${c.dim(adapter.hint)}`)
   }

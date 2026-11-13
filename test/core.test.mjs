@@ -61,6 +61,7 @@ fs.writeFileSync(
   ].map((r) => JSON.stringify(r)).join('\n') + '\n',
 )
 
+process.env.ASS_HOME = tmp
 process.env.ASS_CLAUDE_DIR = claudeDir
 process.env.ASS_CODEX_DIR = codexDir
 process.env.ASS_CODEX_ARCHIVED = path.join(tmp, 'nope')

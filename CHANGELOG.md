@@ -4,6 +4,33 @@
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-11-13
+
+### 新增
+
+- **内置支持 7 个国内 / 常用 Agent**：
+  - **Trae**（字节）：读 `User/workspaceStorage/*/state.vscdb` 里的明文会话
+    （`memento/icube-ai-agent-storage` / `icube-ai-ng-chat-storage`）；
+    新版 `ModularData/ai-agent/database.db` 是 SQLCipher 加密库，**不解密**；
+    没有明文会话时退化为「仅输入历史（无 AI 回复）」。
+  - **Kiro**（AWS）：读新会话 `~/.kiro/sessions/<workspace>/<session>/`
+    （`session.json` + `messages.jsonl`），以及旧版 Continue 内核的
+    `kiro.kiroagent/sessions/*.json`；两代都支持，`.chat` 逐轮请求日志不当作会话。
+  - **DeepSeek Harness（DSH）**：读 `~/.dsh/sessions/**/session.v<N>.jsonl[.zstd]`。
+    日志是 append-only 事件流，默认压成**多个 zstd frame 拼接**；优先用 Node 内置 zstd
+    逐帧解压，旧 Node 回退系统 `zstd -dc`。只收 `source.kind=user` 的真人消息，
+    跳过合成上下文、reasoning 和 tool/result。
+  - **CodeBuddy**（腾讯）：读 CodeBuddy Code CLI 的 JSONL（Claude 兼容）；
+    CN IDE 版是云端优先，本地 `.vscdb` 通常只有索引。
+  - **WorkBuddy**（腾讯）：读 `~/.workbuddy/projects` 与 `~/.workbuddy-ai/projects`
+    的事件流 JSONL（国内版与国际版分开）。
+  - **Qoder**（阿里）：读 `~/.qoder` / `~/.qoder-cn` 的 JSONL，以及桌面版
+    `com.qoder(.cn).app.stable/main.sqlite` 的 `chat_sessions` / `chat_session_messages`。
+  - **通义灵码**（阿里）：读 `~/.lingma/cache/db/local.db` 的明文提问（`extra.originalContent`）
+    与助手摘要（`summary`）；完整 `answer` 加密，因此是**部分支持**，摘要会显式标注。
+- `ass detect` 移除已内置的 Trae / Kiro 探测项，新增 CodeGeeX 探测提示。
+- 新增 8 项回归测试，覆盖 7 个新 adapter、只读保护区与「读取不修改源文件」。
+
 ## [1.2.0] — 2026-11-11
 
 ### 新增

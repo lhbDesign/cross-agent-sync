@@ -44,7 +44,8 @@ process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
 }) as typeof process.emitWarning
 
 const INSTRUCTIONS = `agent-session-sync gives you access to the user's conversation history in OTHER coding
-agents (Claude Code, Codex, Cursor, OpenCode, and any agent the user configured) for the same repository.
+agents (Claude Code, Codex, Cursor, OpenCode, Trae, Kiro, DeepSeek Harness, CodeBuddy, WorkBuddy, Qoder, Lingma,
+and any agent the user configured) for the same repository.
 
 Use it when the user switches agents/models, starts a fresh chat, or says things like
 "继续 / 接着上次 / 同步历史 / 换个模型 / 之前那个会话 / handoff".
@@ -166,7 +167,7 @@ const TOOLS: ToolDef[] = [
   {
     name: 'session_list',
     description:
-      'List recent coding-agent sessions (Claude Code, Codex, Cursor, OpenCode, …) for a repository, across all agents. ' +
+      'List recent coding-agent sessions (Claude Code, Codex, Cursor, OpenCode, Trae, Kiro, DeepSeek Harness, CodeBuddy, WorkBuddy, Qoder, Lingma, …) for a repository, across all agents. ' +
       'Call this when the user starts a new conversation and wants to continue earlier work, or to find which agent handled what. ' +
       'Returns numbered candidates; present the top few to the user and ask which one to import.',
     inputSchema: {
@@ -644,7 +645,7 @@ TOOLS.push({
 const PROMPTS = [
   {
     name: 'sync_previous_session',
-    description: '从其它 agent（Claude Code / Codex / Cursor / OpenCode …）同步一个历史会话，继续之前的工作。',
+    description: '从其它 agent（Claude Code / Codex / Cursor / OpenCode / Trae / Kiro / DeepSeek Harness / CodeBuddy / WorkBuddy / Qoder / 通义灵码 …）同步一个历史会话，继续之前的工作。',
     arguments: [{ name: 'repo', description: '仓库路径（可留空，默认当前目录）', required: false }],
   },
 ]

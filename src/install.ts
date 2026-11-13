@@ -151,7 +151,7 @@ export function rulesBlock(): string {
   return `${MARK_START} (managed block · edits here are overwritten by \`ass install\`) >>> -->
 ## 跨 agent 会话同步（agent-session-sync）
 
-这台机器上有多个编码 agent（Claude Code · Codex · Cursor · OpenCode 等）在共用同一批仓库。
+这台机器上有多个编码 agent（Claude Code · Codex · Cursor · OpenCode · Trae · Kiro · DeepSeek Harness · CodeBuddy · WorkBuddy · Qoder · 通义灵码 等）在共用同一批仓库。
 它们的本地会话历史可以通过 \`ass\` / MCP 工具互相读取（**只读**，不会改动别的 agent 的数据）。
 目标：**agent 是无状态的，项目上下文是有状态的。**
 
@@ -562,7 +562,7 @@ export function doctor(): string[] {
   const sq = sqliteBackend()
   lines.push(`SQLite 读取       ${sq.backend ? `✓ 可用（${sq.backend}）` : '✗ 不可用'}  ${sq.reason}`)
   if (!sq.backend) {
-    lines.push('                  影响：Cursor / OpenCode 以及 sqlite 类型的自定义 agent 读不了；')
+    lines.push('                  影响：Cursor / OpenCode / Trae / Kiro / Qoder / 灵码 以及 sqlite 类型的自定义 agent 读不了；')
     lines.push('                  解决：装个 sqlite3 命令行，或用 Node 22.5+ 并加 --experimental-sqlite')
   }
   lines.push(`MCP 入口          ${mcpScript()}`)

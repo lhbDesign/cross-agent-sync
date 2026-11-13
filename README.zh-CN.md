@@ -384,43 +384,67 @@ ass resume 支付重构 --save
 
 ## 支持的 agent
 
-内置 4 个（Claude Code / Codex / Cursor / OpenCode），其余通过 `ass detect` + 配置接入。
+内置 11 个：Claude Code / Codex / Cursor / OpenCode / Trae / Kiro / DeepSeek Harness / CodeBuddy / WorkBuddy / Qoder / 通义灵码；
+其余通过 `ass detect` + 配置接入。
 
-| agent | 数据源 | 格式 | 图片 |
-| --- | --- | --- | --- |
-| Claude Code | `~/.claude/projects/<slug>/<uuid>.jsonl` | JSONL | ✅ 内联 base64 |
-| Codex | `~/.codex/sessions/**/rollout-*.jsonl`、`~/.codex/archived_sessions/` | JSONL | ✅ 内联 base64 |
-| OpenCode | `~/.local/share/opencode/opencode.db` | SQLite | ✅ `part.data.url` 是 data URL |
-| Cursor | `<Cursor User>/globalStorage/state.vscdb` | SQLite | ✅ 附件文件 `workspaceStorage/<id>/images/` |
-| Continue（可接入） | `~/.continue/sessions/*.json` | JSON | — |
-| Gemini CLI（可接入） | `~/.gemini/tmp/<hash>/chats/*.json` | JSON | — |
+| agent | 数据源 | 格式 | 图片 | 说明 |
+| --- | --- | --- | --- | --- |
+| Claude Code | `~/.claude/projects/<slug>/<uuid>.jsonl` | JSONL | ✅ 内联 base64 | |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl`、`~/.codex/archived_sessions/` | JSONL | ✅ 内联 base64 | |
+| OpenCode | `~/.local/share/opencode/opencode.db` | SQLite | ✅ `part.data.url` 是 data URL | |
+| Cursor | `<Cursor User>/globalStorage/state.vscdb` | SQLite | ✅ 附件文件 | |
+| Trae | `<Trae>/User/workspaceStorage/<hash>/state.vscdb` | SQLite | — | 读 workspaceState 明文会话；新版 `ModularData/ai-agent/database.db` 是 SQLCipher，不解密 |
+| Kiro | `~/.kiro/sessions/<workspace>/<session>/messages.jsonl` + `kiro.kiroagent/sessions/*.json` | JSONL + JSON | ✅ 新会话内联 base64 | 两代会话都读：新 `sessions` 与旧 Continue 内核 |
+| DeepSeek Harness | `~/.dsh/sessions/<project>/<session>/session.v<N>.jsonl[.zstd]` | JSONL（zstd 多帧） | — | append-only 事件流；默认压缩，需 Node ≥22.15/23.8 或系统 `zstd` |
+| CodeBuddy | `~/.codebuddy/projects/<slug>/<session>.jsonl` | JSONL（Claude 兼容） | — | CodeBuddy Code CLI；IDE 版云端会话可能不在本地 |
+| WorkBuddy | `~/.workbuddy/projects/`、`~/.workbuddy-ai/projects/` | JSONL 事件流 | ✅ 内联 base64 | 国内版与国际版分开存放 |
+| Qoder | `~/.qoder/projects`、`~/.qoder-cn/projects`、桌面 `main.sqlite` | JSONL + SQLite | — | CLI JSONL 与桌面库都能读 |
+| 通义灵码 | `~/.lingma/cache/db/local.db` | SQLite | — | **部分支持**：只读明文提问 + 助手摘要，完整 answer 加密 |
+| Continue（可接入） | `~/.continue/sessions/*.json` | JSON | — | |
+| Gemini CLI（可接入） | `~/.gemini/tmp/<hash>/chats/*.json` | JSON | — | |
+
+> **这几家的边界要说清**：
+> - **Trae**：workspaceState 里有明文 `memento/icube-ai-agent-storage` 时能读完整会话；
+>   只有 `icube-ai-agent-storage-input-history` 时退化为「仅输入历史（无 AI 回复）」。
+>   新版 agent 库是 SQLCipher 加密的，本工具**不尝试解密**。
+> - **通义灵码**：`chat_record.question/answer` 是加密的，工具只读 `extra.originalContent`（你的提问）
+>   和 `summary`（助手摘要），助手内容会标成「灵码摘要」，不是完整回复。
+> - **CodeBuddy**：本地能读的是 CodeBuddy Code CLI 的 JSONL；CN IDE 版是云端优先，
+>   本地 `.vscdb` 通常只有索引，不要期待能看到云端正文。
+> - **WorkBuddy**：国内 `~/.workbuddy` 与国际 `~/.workbuddy-ai` 是两套独立数据，不自动合并。
+> - **Kiro**：新会话在 `~/.kiro/sessions`（`session.json` + `messages.jsonl`），
+>   旧版 Continue 内核会话在 `kiro.kiroagent/sessions/*.json`；两代都读，`.chat` 是逐轮请求日志，不当作会话。
+> - **DeepSeek Harness（DSH）**：会话是 append-only JSONL，默认压成**多个 zstd frame 拼接**。
+>   Node 24 自带 zstd；Node 22.15+/23.8+ 也有，旧 Node 需要系统 `zstd` 命令才能读 `.jsonl.zstd`。
 
 仓库归属：Claude / Codex 用会话记录里的 `cwd`，OpenCode 用 `session.directory`，
-Cursor 用 `workspaceStorage/<id>/workspace.json` 里的 `folder`；
+Cursor / Trae 用 `workspaceStorage/<id>/workspace.json` 里的 `folder`，
+Kiro 用 `workspacePaths` / `workspaceDirectory`，DSH 用 session header 的 `cwd`，
+Qoder 用 `chat_sessions.cwd`，灵码用 `project_uri`；
 最后统一用 `git rev-parse --show-toplevel` 归一化 —— 所以从子目录启动的会话也能对上同一个仓库。
 
 ### 没内置的 agent：`ass detect` 自己找
 
 ```bash
 ass detect            # 扫一遍本机，列出所有能找到会话的 agent
-ass detect --write    # 把「可接入」的写进配置文件（本机继续 / Gemini CLI 就是这么进去的）
+ass detect --write    # 把「可接入」的写进配置文件（本机 Continue / Gemini CLI 就是这么进去的）
 ```
 
 `ass detect` 会分三类告诉你：
 
-- **内置**：已经能读的（Claude Code / Codex / Cursor / OpenCode）；
+- **内置**：已经能读的（上面 11 个）；
 - **可接入**：格式已知、给一段现成的 `customAgents` 配置就能用（Continue、Gemini CLI）；
-- **需自定义**：装是装了、但存储结构还没摸清（Trae / Windsurf / VS Code Copilot Chat / Kiro）——
+- **需自定义**：装是装了、但存储结构还没摸清（Windsurf / VS Code Copilot Chat / CodeGeeX）——
   它会告诉你库文件在哪，以及该往哪儿看。
 
-### 关于 IDE 类 agent（Cursor / Kiro / Trae / Windsurf）
+### 关于 IDE 类 agent（Cursor / Trae / Kiro / Windsurf）
 
 这类 agent 把会话塞在自己的 SQLite 或私有存储里，**结构是内部实现、随时会变**。
 所以本工具的态度是：
 
-- Cursor 内置了一份「尽力读取」的适配器（连它存在 `workspaceStorage/<id>/images/` 里的
-  图片附件也能捞出来），读不到会告诉你原因，不会假装支持；
-- Kiro / Trae / Windsurf 这类**需要你自己配置**（见下），你告诉它数据在哪、字段怎么取，它就能用。
+- Cursor / Trae / Kiro 内置了「尽力读取」的适配器；Trae 的加密库不碰，Kiro 新旧两代存储都读，
+  读不到会告诉你原因，不会假装支持；
+- Windsurf 这类**需要你自己配置**（见下），你告诉它数据在哪、字段怎么取，它就能用。
 
 **接 MCP**：`ass install` 写入**用户级**配置，包括 Cursor。需要项目级配置或手工接入时，用 `ass mcp`：
 

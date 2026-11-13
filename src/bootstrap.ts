@@ -7,7 +7,7 @@ import { sqliteBackend } from './sqlite'
  * 如果用户：
  *   - 没装 sqlite3 命令行，且
  *   - Node 版本支持这个 flag，
- * 就带上 flag 重跑一次自己 —— 免得为了读 Cursor / OpenCode 还要额外装东西。
+ * 就带上 flag 重跑一次自己 —— 免得为了读 Cursor / OpenCode / Trae / Kiro / Qoder / 灵码 还要额外装东西。
  *
  * 只重跑一次（ASS_REEXEC 兜底），且只在两条路都比不了的时候才动手。
  */

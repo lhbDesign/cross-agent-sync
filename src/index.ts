@@ -32,10 +32,17 @@ export {
 export type { Config, CustomAgent } from './config'
 
 export { BUILTIN, buildAdapters } from './adapters/registry'
-export { claudeAdapter } from './adapters/claude'
+export { claudeAdapter, makeClaudeFamilyAdapter } from './adapters/claude'
 export { codexAdapter } from './adapters/codex'
 export { cursorAdapter } from './adapters/cursor'
 export { opencodeAdapter } from './adapters/opencode'
+export { codebuddyAdapter } from './adapters/codebuddy'
+export { workbuddyAdapter } from './adapters/workbuddy'
+export { qoderAdapter } from './adapters/qoder'
+export { lingmaAdapter } from './adapters/lingma'
+export { traeAdapter } from './adapters/trae'
+export { kiroAdapter } from './adapters/kiro'
+export { dshAdapter } from './adapters/dsh'
 export { makeCustomAdapter } from './adapters/generic'
 
 export {

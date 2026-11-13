@@ -54,12 +54,6 @@ const PRESETS: CustomAgent[] = [
 /** 只是探个存在、格式还没确定的 agent */
 const PROBES: { id: string; label: string; path: string; detail: string }[] = [
   {
-    id: 'trae',
-    label: 'Trae',
-    path: '~/Library/Application Support/Trae/User/globalStorage/state.vscdb',
-    detail: 'Trae 是 VS Code 分支，聊天记录在 state.vscdb / workspaceStorage 里，需要自己的 query',
-  },
-  {
     id: 'windsurf',
     label: 'Windsurf',
     path: '~/Library/Application Support/Windsurf/User/globalStorage/state.vscdb',
@@ -72,10 +66,10 @@ const PROBES: { id: string; label: string; path: string; detail: string }[] = [
     detail: 'Copilot Chat 的会话在 ItemTable / cursorDiskKV 里，可按 sqlite 类型接',
   },
   {
-    id: 'kiro',
-    label: 'Kiro',
-    path: '~/.kiro',
-    detail: 'Kiro 的会话目录因版本而异，找到 *.jsonl / *.json 后用 ass detect 的草案填 map',
+    id: 'codegeex',
+    label: 'CodeGeeX',
+    path: '~/.codegeex',
+    detail: 'CodeGeeX 的会话可能在插件存储或服务端，本地目前只看到日志/配置；暂未适配',
   },
 ]
 

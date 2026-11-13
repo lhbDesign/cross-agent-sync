@@ -9,16 +9,23 @@ import { sessionTitle } from './title'
  *
  * 图片：用户消息 content 里就是 base64 内联
  *   { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "..." } }
+ *
+ * 这个解析器同时被 CodeBuddy / Qoder 复用：两者的 CLI 会话也是
+ * `projects/<slug>/<session>.jsonl`，记录形状与 Claude 兼容。
  */
-/** 数据源可用 ASS_CLAUDE_DIR 覆盖（测试 / 非默认安装位置） */
-const ROOT = process.env.ASS_CLAUDE_DIR || path.join(HOME, '.claude', 'projects')
+const DEFAULT_ROOT = process.env.ASS_CLAUDE_DIR || path.join(HOME, '.claude', 'projects')
 
 interface FileCache {
   files?: Record<string, { stamp: string; meta: SessionMeta }>
 }
 
-function available(): boolean {
-  return isDir(ROOT)
+export interface ClaudeFamilyOptions {
+  id: string
+  label: string
+  /** 一个或多个 projects 根目录 */
+  roots: string[]
+  resumeCmd?: (meta: SessionMeta) => string
+  hint?: string
 }
 
 /** 用户消息里的文本 + 图片（跳过 tool_result / 系统注入） */
@@ -54,7 +61,7 @@ function isHumanUser(rec: Record<string, any>): boolean {
   return true
 }
 
-function parseFile(file: string): SessionMeta {
+function parseFile(file: string, opts: ClaudeFamilyOptions): SessionMeta {
   const sessionId = path.basename(file, '.jsonl')
   let cwd: string | null = null
   let branch: string | null = null
@@ -92,9 +99,9 @@ function parseFile(file: string): SessionMeta {
   const st = statOf(file)
   const repo = cwd ? gitRoot(cwd) : null
   return {
-    key: `claude:${sessionId}`,
-    agent: 'claude',
-    agentLabel: 'Claude Code',
+    key: `${opts.id}:${sessionId}`,
+    agent: opts.id,
+    agentLabel: opts.label,
     id: sessionId,
     title: customTitle || title || (firstUser ? plain(firstUser, 70) : '(空会话)'),
     preview: plain(lastUser, 140),
@@ -113,71 +120,103 @@ function parseFile(file: string): SessionMeta {
   }
 }
 
-function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
-  const cache = ctx.cache as FileCache
-  const prev = cache.files || {}
-  const next: Record<string, { stamp: string; meta: SessionMeta }> = {}
-  const out: SessionMeta[] = []
-  let dirs: fs.Dirent[] = []
+/** 一个 projects 根下可能既有 <slug>/<id>.jsonl，也可能直接放 <id>.jsonl */
+function jsonlFiles(root: string): { file: string; names: Map<string, string> }[] {
+  const out: { file: string; names: Map<string, string> }[] = []
+  let entries: fs.Dirent[] = []
   try {
-    dirs = fs.readdirSync(ROOT, { withFileTypes: true }).filter((d) => d.isDirectory())
+    entries = fs.readdirSync(root, { withFileTypes: true })
   } catch {
-    return []
+    return out
   }
-  for (const d of dirs) {
-    const dir = path.join(ROOT, d.name)
-    const index = readJsonFile<{ entries?: unknown } | null>(path.join(dir, 'sessions-index.json'), null)
-    const names = new Map<string, string>()
-    if (Array.isArray(index?.entries)) {
-      for (const entry of index.entries) {
-        if (!entry || typeof entry.sessionId !== 'string') continue
-        const title = sessionTitle(entry.customTitle) || sessionTitle(entry.summary)
-        if (title) names.set(entry.sessionId, title)
+  for (const e of entries) {
+    if (e.isFile() && e.name.endsWith('.jsonl')) out.push({ file: path.join(root, e.name), names: new Map() })
+    else if (!e.isDirectory()) continue
+    else {
+      const dir = path.join(root, e.name)
+      const index = readJsonFile<{ entries?: unknown } | null>(path.join(dir, 'sessions-index.json'), null)
+      const names = new Map<string, string>()
+      if (Array.isArray(index?.entries)) {
+        for (const entry of index.entries) {
+          if (!entry || typeof entry.sessionId !== 'string') continue
+          const title = sessionTitle(entry.customTitle) || sessionTitle(entry.summary)
+          if (title) names.set(entry.sessionId, title)
+        }
       }
-    }
-    let files: string[] = []
-    try {
-      files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
-    } catch {
-      continue
-    }
-    for (const f of files) {
-      const full = path.join(dir, f)
-      const st = statOf(full)
-      if (!st || st.size === 0) continue
-      const stamp = `titles-v1:${st.mtimeMs}:${st.size}`
-      const hit = prev[full]
-      const meta = hit && hit.stamp === stamp ? hit.meta : parseFile(full)
-      next[full] = { stamp, meta }
-      out.push({ ...meta, title: sessionTitle(meta.extra?.customTitle) || sessionTitle(meta.extra?.aiTitle) || names.get(meta.id) || meta.title })
+      let files: string[] = []
+      try {
+        files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
+      } catch {
+        continue
+      }
+      for (const f of files) out.push({ file: path.join(dir, f), names })
     }
   }
-  cache.files = next
   return out
 }
 
-function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
-  const turns: Turn[] = []
-  const iter = opts.tail ? readJsonlTail(meta.source, Math.max(1 << 20, opts.tail * 4096)) : readJsonl(meta.source)
-  for (const rec of iter) {
-    if (rec.type === 'user' && isHumanUser(rec)) {
-      const { text, images } = userParts(rec.message?.content)
-      if (!text && images.length === 0) continue
-      if (text && isInjected(text) && images.length === 0) continue
-      turns.push({ role: 'user', text, at: Date.parse(rec.timestamp) || undefined, images: images.length ? images : undefined })
-    } else if (rec.type === 'assistant') {
-      const blocks: any[] = rec.message?.content || []
-      const parts: string[] = []
-      for (const b of blocks) {
-        if (!b) continue
-        if (b.type === 'text' && b.text) parts.push(String(b.text))
-        else if (b.type === 'tool_use') parts.push(`▸ ${b.name}: ${toolSummary(b.input)}`)
-      }
-      const text = parts.join('\n').trim()
-      if (text) turns.push({ role: 'assistant', text, at: Date.parse(rec.timestamp) || undefined })
-    }
+export function makeClaudeFamilyAdapter(opts: ClaudeFamilyOptions): Adapter {
+  const roots = opts.roots.filter(Boolean)
+
+  function available(): boolean {
+    return roots.some((r) => isDir(r))
   }
-  return opts.tail ? turns.slice(-opts.tail) : turns
+
+  function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
+    const cache = ctx.cache as FileCache
+    const prev = cache.files || {}
+    const next: Record<string, { stamp: string; meta: SessionMeta }> = {}
+    const out: SessionMeta[] = []
+    for (const root of roots) {
+      for (const { file, names } of jsonlFiles(root)) {
+        const st = statOf(file)
+        if (!st || st.size === 0) continue
+        const stamp = `titles-v1:${st.mtimeMs}:${st.size}`
+        const hit = prev[file]
+        const meta = hit && hit.stamp === stamp ? hit.meta : parseFile(file, opts)
+        next[file] = { stamp, meta }
+        out.push({ ...meta, title: sessionTitle(meta.extra?.customTitle) || sessionTitle(meta.extra?.aiTitle) || names.get(meta.id) || meta.title })
+      }
+    }
+    cache.files = next
+    return out
+  }
+
+  function read(meta: SessionMeta, readOpts: ReadOptions = {}): Turn[] {
+    const turns: Turn[] = []
+    const iter = readOpts.tail ? readJsonlTail(meta.source, Math.max(1 << 20, readOpts.tail * 4096)) : readJsonl(meta.source)
+    for (const rec of iter) {
+      if (rec.type === 'user' && isHumanUser(rec)) {
+        const { text, images } = userParts(rec.message?.content)
+        if (!text && images.length === 0) continue
+        if (text && isInjected(text) && images.length === 0) continue
+        turns.push({ role: 'user', text, at: Date.parse(rec.timestamp) || undefined, images: images.length ? images : undefined })
+      } else if (rec.type === 'assistant') {
+        const blocks: any[] = rec.message?.content || []
+        const parts: string[] = []
+        for (const b of blocks) {
+          if (!b) continue
+          if (b.type === 'text' && b.text) parts.push(String(b.text))
+          else if (b.type === 'tool_use') parts.push(`▸ ${b.name}: ${toolSummary(b.input)}`)
+        }
+        const text = parts.join('\n').trim()
+        if (text) turns.push({ role: 'assistant', text, at: Date.parse(rec.timestamp) || undefined })
+      }
+    }
+    return readOpts.tail ? turns.slice(-readOpts.tail) : turns
+  }
+
+  const adapter: Adapter = {
+    id: opts.id,
+    label: opts.label,
+    available,
+    sources: () => roots,
+    list,
+    read,
+  }
+  if (opts.resumeCmd) adapter.resumeCmd = opts.resumeCmd
+  if (opts.hint) adapter.hint = opts.hint
+  return adapter
 }
 
 function toolSummary(input: unknown): string {
@@ -187,12 +226,9 @@ function toolSummary(input: unknown): string {
   return typeof v === 'string' ? plain(v, 100) : ''
 }
 
-export const claudeAdapter: Adapter = {
+export const claudeAdapter: Adapter = makeClaudeFamilyAdapter({
   id: 'claude',
   label: 'Claude Code',
-  available,
-  sources: () => [ROOT],
-  list,
-  read,
+  roots: [DEFAULT_ROOT],
   resumeCmd: (m) => `claude --resume ${m.id}`,
-}
+})

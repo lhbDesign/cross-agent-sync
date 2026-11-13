@@ -15,6 +15,7 @@ fs.writeFileSync(
 
 const env = {
   ...process.env,
+  ASS_HOME: tmp,
   ASS_CLAUDE_DIR: claudeDir,
   ASS_CODEX_DIR: path.join(tmp, 'nope'),
   ASS_CODEX_ARCHIVED: path.join(tmp, 'nope2'),

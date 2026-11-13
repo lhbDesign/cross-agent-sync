@@ -4,10 +4,29 @@ import { claudeAdapter } from './claude'
 import { codexAdapter } from './codex'
 import { opencodeAdapter } from './opencode'
 import { cursorAdapter } from './cursor'
+import { codebuddyAdapter } from './codebuddy'
+import { workbuddyAdapter } from './workbuddy'
+import { qoderAdapter } from './qoder'
+import { lingmaAdapter } from './lingma'
+import { traeAdapter } from './trae'
+import { kiroAdapter } from './kiro'
+import { dshAdapter } from './dsh'
 import { makeCustomAdapter } from './generic'
 
 /** 内置 adapter：按「用的人多」排序 */
-export const BUILTIN: Adapter[] = [claudeAdapter, codexAdapter, cursorAdapter, opencodeAdapter]
+export const BUILTIN: Adapter[] = [
+  claudeAdapter,
+  codexAdapter,
+  cursorAdapter,
+  opencodeAdapter,
+  traeAdapter,
+  kiroAdapter,
+  dshAdapter,
+  codebuddyAdapter,
+  workbuddyAdapter,
+  qoderAdapter,
+  lingmaAdapter,
+]
 
 /**
  * 组装本次要用的 adapter 列表：

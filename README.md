@@ -395,19 +395,45 @@ The only reliable channel: **jot a line while working**. The rule block encodes 
 
 ## Supported agents
 
-Four built-in (Claude Code / Codex / Cursor / OpenCode); others via `ass detect` + config.
+Eleven built-in: Claude Code / Codex / Cursor / OpenCode / Trae / Kiro / DeepSeek Harness / CodeBuddy / WorkBuddy / Qoder / Lingma;
+others via `ass detect` + config.
 
-| Agent | Data source | Format | Images |
-| --- | --- | --- | --- |
-| Claude Code | `~/.claude/projects/<slug>/<uuid>.jsonl` | JSONL | ✅ inline base64 |
-| Codex | `~/.codex/sessions/**/rollout-*.jsonl`, `~/.codex/archived_sessions/` | JSONL | ✅ inline base64 |
-| OpenCode | `~/.local/share/opencode/opencode.db` | SQLite | ✅ `part.data.url` as data URL |
-| Cursor | `<Cursor User>/globalStorage/state.vscdb` | SQLite | ✅ attachment files in `workspaceStorage/<id>/images/` |
-| Continue (pluggable) | `~/.continue/sessions/*.json` | JSON | — |
-| Gemini CLI (pluggable) | `~/.gemini/tmp/<hash>/chats/*.json` | JSON | — |
+| Agent | Data source | Format | Images | Notes |
+| --- | --- | --- | --- | --- |
+| Claude Code | `~/.claude/projects/<slug>/<uuid>.jsonl` | JSONL | ✅ inline base64 | |
+| Codex | `~/.codex/sessions/**/rollout-*.jsonl`, `~/.codex/archived_sessions/` | JSONL | ✅ inline base64 | |
+| OpenCode | `~/.local/share/opencode/opencode.db` | SQLite | ✅ `part.data.url` as data URL | |
+| Cursor | `<Cursor User>/globalStorage/state.vscdb` | SQLite | ✅ attachment files | |
+| Trae | `<Trae>/User/workspaceStorage/<hash>/state.vscdb` | SQLite | — | reads plaintext workspaceState sessions; the newer `ModularData/ai-agent/database.db` is SQLCipher and is not decrypted |
+| Kiro | `~/.kiro/sessions/<workspace>/<session>/messages.jsonl` + `kiro.kiroagent/sessions/*.json` | JSONL + JSON | ✅ inline base64 in new sessions | both generations: new `sessions` and legacy Continue-core |
+| DeepSeek Harness | `~/.dsh/sessions/<project>/<session>/session.v<N>.jsonl[.zstd]` | JSONL (multi-frame zstd) | — | append-only event log; compressed by default; needs Node ≥22.15/23.8 or system `zstd` |
+| CodeBuddy | `~/.codebuddy/projects/<slug>/<session>.jsonl` | JSONL (Claude-compatible) | — | CodeBuddy Code CLI; IDE cloud sessions may not be local |
+| WorkBuddy | `~/.workbuddy/projects/`, `~/.workbuddy-ai/projects/` | JSONL event stream | ✅ inline base64 | domestic and international editions are separate |
+| Qoder | `~/.qoder/projects`, `~/.qoder-cn/projects`, desktop `main.sqlite` | JSONL + SQLite | — | CLI JSONL and desktop DB both supported |
+| Lingma (通义灵码) | `~/.lingma/cache/db/local.db` | SQLite | — | **partial**: plaintext questions + assistant summaries; full answers are encrypted |
+| Continue (pluggable) | `~/.continue/sessions/*.json` | JSON | — | |
+| Gemini CLI (pluggable) | `~/.gemini/tmp/<hash>/chats/*.json` | JSON | — | |
 
-Repo ownership: Claude / Codex use `cwd` from the session; OpenCode uses `session.directory`;
-Cursor uses `folder` from `workspaceStorage/<id>/workspace.json`;
+> **Limits worth knowing**:
+> - **Trae**: reads full sessions from plaintext `memento/icube-ai-agent-storage` when present;
+>   otherwise falls back to `icube-ai-agent-storage-input-history` ("input history only, no AI replies").
+>   The newer SQLCipher-encrypted agent DB is **not decrypted**.
+> - **Lingma**: `chat_record.question/answer` are encrypted. The adapter reads `extra.originalContent`
+>   (your question) and `summary` (assistant summary), prefixed with `（灵码摘要）` — not the full reply.
+> - **CodeBuddy**: local support covers the CodeBuddy Code CLI JSONL. The CN IDE is cloud-first;
+>   its local `.vscdb` usually holds only an index.
+> - **WorkBuddy**: `~/.workbuddy` and `~/.workbuddy-ai` are independent stores and are not merged.
+> - **Kiro**: new sessions live in `~/.kiro/sessions` (`session.json` + `messages.jsonl`);
+>   legacy Continue-core sessions live in `kiro.kiroagent/sessions/*.json`. Both are read.
+>   `.chat` files are per-turn request logs and are not treated as sessions.
+> - **DeepSeek Harness (DSH)**: sessions are append-only JSONL, compressed by default as
+>   **concatenated zstd frames**. Node 24 has built-in zstd; Node 22.15+/23.8+ also works.
+>   Older Node needs the `zstd` CLI to read `.jsonl.zstd`.
+
+Repo ownership: Claude / Codex use `cwd`; OpenCode uses `session.directory`;
+Cursor / Trae use `folder` from `workspaceStorage/<id>/workspace.json`;
+Kiro uses `workspacePaths` / `workspaceDirectory`; DSH uses the session header `cwd`;
+Qoder uses `chat_sessions.cwd`; Lingma uses `project_uri`;
 everything is normalized with `git rev-parse --show-toplevel` — sessions started from a subdirectory
 still map to the same repo.
 
@@ -420,19 +446,20 @@ ass detect --write    # write “pluggable” ones into config (how Continue / G
 
 `ass detect` reports three buckets:
 
-- **Built-in**: already readable (Claude Code / Codex / Cursor / OpenCode);
+- **Built-in**: already readable (the eleven above);
 - **Pluggable**: known format — a ready-made `customAgents` snippet makes them work (Continue, Gemini CLI);
-- **Needs custom**: installed, but storage layout not mapped yet (Trae / Windsurf / VS Code Copilot Chat / Kiro) —
+- **Needs custom**: installed, but storage layout not mapped yet (Windsurf / VS Code Copilot Chat / CodeGeeX) —
   it tells you where the DB is and what to look at.
 
-### About IDE agents (Cursor / Kiro / Trae / Windsurf)
+### About IDE agents (Cursor / Trae / Kiro / Windsurf)
 
 These stash sessions in their own SQLite or private stores — **internal, subject to change**.
 This tool’s stance:
 
-- Cursor ships a best-effort adapter (including images under `workspaceStorage/<id>/images/`);
-  if it cannot read, it explains why instead of pretending;
-- Kiro / Trae / Windsurf need **your config** (below): tell it where data lives and how to map fields.
+- Cursor / Trae / Kiro ship best-effort adapters. Trae deliberately does not touch its encrypted agent DB;
+  Kiro reads both the new `sessions` store and the legacy Continue-core store. If a format cannot be read,
+  the tool explains what is missing instead of pretending;
+- Windsurf needs **your config** (below): tell it where data lives and how to map fields.
 
 **MCP wiring**: `ass install` writes **user-level** config, including Cursor.
 For project-level configuration or manual setup, use `ass mcp`:
