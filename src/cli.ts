@@ -48,7 +48,7 @@ import {
   uninstallProjectMcp,
 } from './install'
 import { applyDetected, detectSources } from './detect'
-import { dispWidth, fmtTime, pkgVersion, plain, truncWidth } from './util'
+import { dispWidth, fmtTime, gitRoot, pkgVersion, plain, truncWidth } from './util'
 import { maybeReexec } from './bootstrap'
 
 const TTY = process.stdout.isTTY === true
@@ -1193,11 +1193,14 @@ function cmdDetect(args: Args, cfg: Config): void {
 
 function cmdRepos(args: Args, cfg: Config): void {
   const { sessions } = listSessions({ includeAll: true }, cfg)
-  const byRepo = new Map<string, { n: number; agents: Set<string>; byAgent: Record<string, number>; last: number }>()
+  const byRepo = new Map<string, { n: number; agents: Set<string>; byAgent: Record<string, number>; keys: string[]; last: number }>()
   for (const s of sessions) {
-    const key = s.repo || s.cwd || '(未知)'
-    const e = byRepo.get(key) || { n: 0, agents: new Set<string>(), byAgent: {}, last: 0 }
+    // 和 `status --repo` 用同一套归一化：repo 缺失时退回 cwd 的 git 根目录，
+    // 否则「全部项目」会把子目录 cwd 单独算一个项目，点进去数量对不上。
+    const key = s.repo || (s.cwd ? gitRoot(s.cwd) : null) || s.cwd || '(未知)'
+    const e = byRepo.get(key) || { n: 0, agents: new Set<string>(), byAgent: {}, keys: [], last: 0 }
     e.n++
+    e.keys.push(s.key)
     e.agents.add(s.agent)
     e.byAgent[s.agent] = (e.byAgent[s.agent] || 0) + 1
     e.last = Math.max(e.last, s.updatedAt || s.startedAt || 0)
@@ -1205,7 +1208,7 @@ function cmdRepos(args: Args, cfg: Config): void {
   }
   const rows = [...byRepo].sort((a, b) => b[1].last - a[1].last)
   if (args.flags.json) {
-    console.log(JSON.stringify(rows.map(([r, v]) => ({ repo: r, sessions: v.n, agents: [...v.agents], byAgent: v.byAgent })), null, 2))
+    console.log(JSON.stringify(rows.map(([r, v]) => ({ repo: r, sessions: v.n, agents: [...v.agents], byAgent: v.byAgent, keys: v.keys })), null, 2))
     return
   }
   for (const [repo, v] of rows) {

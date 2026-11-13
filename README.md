@@ -240,7 +240,16 @@ Grab an installer from **GitHub Releases**:
   - user inputs (verbatim, no summarization)
   - all messages (user + assistant)
   - assistant replies (summary / full text)
+
+  Each mode has a search box; messages are sorted newest first; user and assistant messages use
+  different backgrounds; each assistant reply can be collapsed, with collapse-all / expand-all at the top.
 - **All projects**: project cards with agent badges; click through to details.
+  The ✎ on a card or in a project sets a display name (app-only; it does not rename the directory
+  or the agent's own session title).
+- **Cleanup**: pick an agent, then remove one or all sessions. Only file-based sources are supported
+  (Claude / Codex / CodeBuddy / WorkBuddy / Kiro / DSH / Qoder JSONL / Continue / Gemini).
+  Cursor, OpenCode, Trae, Lingma and the Qoder desktop DB are shared SQLite stores and are not
+  deletable here. Cleanup moves items to the system Trash / Recycle Bin (recoverable).
 - **Settings**: data directory, MCP config path, app and runtime versions.
 - **Actions**: generate a handoff brief (copy / export `.md`), view user inputs, copy the resume command,
   save a handoff note, record a note, create a task. Every write asks for confirmation and names the target.

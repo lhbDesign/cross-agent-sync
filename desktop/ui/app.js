@@ -20,6 +20,9 @@ const state = {
   selectedKey: null,
   repoFilter: '',
   agentFilter: null,
+  aliases: { projects: {}, sessions: {} },
+  cleanupAgent: null,
+  cleanupSessions: [],
 }
 
 // ─────────────────────────────── 小工具
@@ -59,6 +62,15 @@ function prettyName(p) {
   } catch {
     return b
   }
+}
+
+/** 桌面端显示名：优先用本应用里设置的名字，其次才是路径/原生标题 */
+function projectLabel(repo) {
+  return state.aliases.projects?.[repo] || prettyName(repo)
+}
+
+function sessionLabel(s) {
+  return state.aliases.sessions?.[s?.key] || s?.title || '(无标题)'
 }
 
 let toastTimer = 0
@@ -214,6 +226,8 @@ function openModal({ title, desc = '', fields = [], okText = '确定', onSubmit,
 function openDrawer(title, sub, bodyHtml) {
   el('drawer-title').textContent = title
   el('drawer-sub').textContent = sub
+  el('drawer-toolbar').classList.add('hidden')
+  el('drawer-toolbar').innerHTML = ''
   el('drawer-body').innerHTML = bodyHtml
   el('drawer').classList.remove('hidden')
   el('drawer-mask').classList.remove('hidden')
@@ -222,11 +236,13 @@ function openDrawer(title, sub, bodyHtml) {
 function closeDrawer() {
   el('drawer').classList.add('hidden')
   el('drawer-mask').classList.add('hidden')
+  el('drawer-toolbar').classList.add('hidden')
+  el('drawer-toolbar').innerHTML = ''
 }
 
 // ─────────────────────────────── 导航
 
-const TAB_TITLES = { overview: '概览', project: '项目', all: '全部项目', settings: '设置' }
+const TAB_TITLES = { overview: '概览', project: '项目', all: '全部项目', cleanup: '清理', settings: '设置' }
 
 function switchTab(tab) {
   if (!TAB_TITLES[tab]) return
@@ -234,6 +250,10 @@ function switchTab(tab) {
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${tab}`))
   el('view-title').textContent = TAB_TITLES[tab]
   if (tab === 'all' && !state.repos.length) guard(() => loadRepos(true).then(renderAll))
+  if (tab === 'cleanup') {
+    renderCleanupAgents()
+    if (state.cleanupAgent) guard(() => loadCleanup(state.cleanupAgent))
+  }
 }
 
 // ─────────────────────────────── 启动
@@ -246,6 +266,9 @@ async function boot() {
   try {
     state.boot = await api.boot()
     state.agents = state.boot?.agents || []
+    try {
+      state.aliases = await api.aliases()
+    } catch { /* 别名读不到不影响主流程 */ }
     renderSettings()
     renderOverview()
   } catch (e) {
@@ -349,6 +372,7 @@ function renderOverview() {
   const diskById = new Map(state.disk.map((d) => [d.id, d]))
   renderAgentsTable(diskById)
   renderOverviewCharts()
+  renderCleanupAgents()
 }
 
 function renderAgentsTable(diskById = new Map(state.disk.map((d) => [d.id, d]))) {
@@ -382,18 +406,31 @@ function renderAgentsTable(diskById = new Map(state.disk.map((d) => [d.id, d])))
 }
 
 function renderOverviewCharts() {
-  const sessionRows = state.agents
-    .filter((a) => a.available)
-    .map((a) => ({ name: a.label, value: agentSessionCount(a.id) }))
-    .filter((r) => r.value > 0)
-    .map((r) => ({ ...r, text: num(r.value) }))
-  el('chart-sessions').innerHTML = barChart(sessionRows)
-
-  const diskRows = state.disk
+  // 右侧磁盘占用按大小降序；左侧会话数分布跟同一 agent 顺序，左右对称
+  const diskSorted = state.disk
     .filter((d) => d.bytes > 0)
+    .slice()
     .sort((a, b) => b.bytes - a.bytes)
-    .map((d) => ({ name: d.label, value: d.bytes, text: humanSize(d.bytes) }))
+
+  const diskRows = diskSorted.map((d) => ({ name: d.label, value: d.bytes, text: humanSize(d.bytes) }))
   el('chart-disk').innerHTML = barChart(diskRows)
+
+  const countById = new Map(state.agents.map((a) => [a.id, agentSessionCount(a.id)]))
+  const sessionRows = diskSorted
+    .map((d) => {
+      const value = countById.get(d.id)
+      return { name: d.label, value: typeof value === 'number' ? value : 0, text: num(value) }
+    })
+    .filter((r) => r.value > 0)
+  // 磁盘有、会话数为 0 的已滤掉；若还有可用但磁盘未统计到的 agent，接到末尾
+  const seen = new Set(diskSorted.map((d) => d.id))
+  for (const a of state.agents) {
+    if (!a.available || seen.has(a.id)) continue
+    const value = agentSessionCount(a.id)
+    if (!(value > 0)) continue
+    sessionRows.push({ name: a.label, value, text: num(value) })
+  }
+  el('chart-sessions').innerHTML = barChart(sessionRows)
 }
 
 // ─────────────────────────────── 全部项目
@@ -427,7 +464,10 @@ function renderAll() {
   el('repos-grid').innerHTML = list
     .map(
       (r) => `<div class="repo-card" data-repo="${esc(r.repo)}">
-        <div class="repo-name" title="${esc(r.repo)}">${esc(prettyName(r.repo))}</div>
+        <div class="repo-top">
+          <div class="repo-name" title="${esc(r.repo)}">${esc(projectLabel(r.repo))}</div>
+          <button class="btn ghost icon repo-edit" data-edit-repo="${esc(r.repo)}" title="重命名显示名">✎</button>
+        </div>
         <div class="repo-path" title="${esc(r.repo)}">${esc(r.repo)}</div>
         <div class="repo-meta">
           <span class="repo-count">${num(r.sessions)} 个会话</span>
@@ -503,7 +543,10 @@ function renderSessions() {
       .map(
         (s) => `<div class="row${state.selectedKey === s.key ? ' selected' : ''}" data-key="${esc(s.key)}">
           <span class="cell"><span class="badge">${esc(s.agentLabel || s.agent)}</span></span>
-          <span class="cell title-cell" title="${esc(s.title)}">${esc(s.title || '(无标题)')}</span>
+          <span class="cell title-cell" title="${esc(s.title)}">
+            <span class="title-text">${esc(sessionLabel(s))}</span>
+            <button class="btn ghost icon row-edit" data-rename-session="${esc(s.key)}" title="重命名显示名">✎</button>
+          </span>
           <span class="cell preview-cell" title="${esc(s.preview)}">${esc(s.preview || '—')}</span>
           <span class="cell num">${num(s.turns)}</span>
           <span class="cell mono">${esc(fmtTime(s.updatedAt))}</span>
@@ -598,21 +641,106 @@ function summarize(text, max = 280) {
   return `${t.slice(0, max).replace(/[\s，,。.;；:：、\-]+$/, '')}…`
 }
 
-const drawerState = { key: null, turns: [], mode: 'user', sub: 'summary' }
+/** 工具名（含 UI 里常见的 ▸ Bash: / ▶ Read: 前缀） */
+const TOOL_NAME_RE =
+  /(?:Bash|Shell|Read|Edit|Write|Search|Grep|Glob|WebFetch|WebSearch|CallMcpTool|Await|TodoWrite|StrReplace|Delete|NotebookEdit|Task|Agent|Skill)/i
+const TOOL_LINE_RE = new RegExp(
+  `^[\\s]*[▸►▶•·▪▫＊*\\-–—]?\\s*${TOOL_NAME_RE.source}(?:\\s*[:：]\\s*|\\b)`,
+  'i',
+)
+
+/** 纯工具 / 思考轮：不在「智能体回答」里展示 */
+function isToolOrThinkingTurn(text) {
+  const t = String(text || '').trim()
+  if (!t) return false
+  // ▸ Bash: sed ... / Bash: ... / ▶ Read path
+  if (TOOL_LINE_RE.test(t)) return true
+  if (/^(Thought|Thinking|思考过程|推理|Running|执行工具)\b/i.test(t)) return true
+  if (/^<(thinking|think|reasoning|tool_call|tool_use)\b/i.test(t)) return true
+  // 整段几乎只有工具调用块
+  const withoutTools = t
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(new RegExp(`^[\\s]*[▸►▶•·▪▫＊*\\-–—]?\\s*${TOOL_NAME_RE.source}\\s*[:：]?.*$`, 'gim'), '')
+    .trim()
+  return withoutTools.length < 12 && t.length > 20
+}
+
+/** 从助手全文里抽出结论：去掉思考标签、工具过程，优先取「结果/结论」段 */
+function extractConclusion(text) {
+  let t = String(text || '')
+  t = t
+    .replace(/<(thinking|think|reasoning|tool_call|tool_use)[\s\S]*?<\/\1>/gi, '')
+    .replace(/```(?:thinking|thought|reasoning)[\s\S]*?```/gi, '')
+    .replace(/^\s*(Thought|Thinking|思考过程|推理)[:：]?\s*[\s\S]*?(?=\n#{1,3}\s|\n##\s*结果|\n##\s*结论|\n(?=[^\s]))/gim, '')
+  // 连续的工具行（含 ▸ Bash:）
+  t = t.replace(new RegExp(`^[\\s]*[▸►▶•·▪▫＊*\\-–—]?\\s*${TOOL_NAME_RE.source}\\s*[:：]?.*$`, 'gim'), '')
+  const resultMatch = t.match(/(?:^|\n)#{1,3}\s*(结果|结论|回答|最终|Final|Result)\s*\n([\s\S]+)$/i)
+  if (resultMatch) t = resultMatch[2]
+  t = t.replace(/\n{3,}/g, '\n\n').trim()
+  // 抽完若只剩空白，视为无结论（调用方会显示「无文字」）；不要退回整段工具原文
+  return t
+}
+
+const drawerState = { key: null, turns: [], mode: 'user', sub: 'summary', query: '', collapsed: new Set() }
 
 const TURN_FILTERS = {
   user: (t) => t.role === 'user',
-  all: (t) => t.role === 'user' || t.role === 'assistant',
-  assistant: (t) => t.role === 'assistant',
+  all: (t) => t.role === 'user' || (t.role === 'assistant' && !isToolOrThinkingTurn(t.text)),
+  assistant: (t) => t.role === 'assistant' && !isToolOrThinkingTurn(t.text),
 }
 
 function drawerCounts() {
-  const all = drawerState.turns.filter(TURN_FILTERS.all)
+  const users = drawerState.turns.filter((t) => t.role === 'user')
+  const assistants = drawerState.turns.filter((t) => t.role === 'assistant' && !isToolOrThinkingTurn(t.text))
   return {
-    user: all.filter((t) => t.role === 'user').length,
-    assistant: all.filter((t) => t.role === 'assistant').length,
-    all: all.length,
+    user: users.length,
+    assistant: assistants.length,
+    all: users.length + assistants.length,
   }
+}
+
+function assistantIds() {
+  return drawerState.turns.filter((t) => t.role === 'assistant' && !isToolOrThinkingTurn(t.text)).map((t) => t._id)
+}
+
+/** 折叠到约两行：按行数截，或单段长文按字数截 */
+function firstLines(text, lines = 2) {
+  const raw = String(text || '')
+  const parts = raw.split(/\n/).map((x) => x.trimEnd()).filter((x) => x.trim())
+  if (parts.length > lines) return `${parts.slice(0, lines).join('\n')}…`
+  const maxChars = lines * 72
+  if (raw.length > maxChars) {
+    const cut = raw.slice(0, maxChars)
+    return `${cut.replace(/\s+\S*$/, '').trimEnd() || cut.trimEnd()}…`
+  }
+  return raw
+}
+
+/** 在已转义文本上高亮搜索词（先匹配原文再分段转义） */
+function highlightText(text, query) {
+  const raw = String(text ?? '')
+  const q = String(query || '').trim()
+  if (!q) return esc(raw)
+  const lower = raw.toLowerCase()
+  const needle = q.toLowerCase()
+  let out = ''
+  let i = 0
+  while (i < raw.length) {
+    const j = lower.indexOf(needle, i)
+    if (j < 0) {
+      out += esc(raw.slice(i))
+      break
+    }
+    out += esc(raw.slice(i, j))
+    out += `<mark class="hl">${esc(raw.slice(j, j + needle.length))}</mark>`
+    i = j + needle.length
+  }
+  return out
+}
+
+function displayAssistantText(text, summary) {
+  const conclusion = extractConclusion(text)
+  return summary ? summarize(conclusion) : conclusion
 }
 
 function renderDrawerTurnList() {
@@ -620,47 +748,77 @@ function renderDrawerTurnList() {
   const isAssistant = drawerState.mode === 'assistant'
   const summary = isAssistant && drawerState.sub === 'summary'
 
-  // 分段控件状态
-  $$('#drawer-body [data-mode]').forEach((b) => b.classList.toggle('active', b.dataset.mode === drawerState.mode))
-  $$('#drawer-body [data-sub]').forEach((b) => b.classList.toggle('active', b.dataset.sub === drawerState.sub))
+  $$('#drawer-toolbar [data-mode]').forEach((b) => b.classList.toggle('active', b.dataset.mode === drawerState.mode))
+  $$('#drawer-toolbar [data-sub]').forEach((b) => b.classList.toggle('active', b.dataset.sub === drawerState.sub))
   el('drawer-sub-seg')?.classList.toggle('hidden', !isAssistant)
+
+  const q = drawerState.query.trim()
+  const qLower = q.toLowerCase()
+  const base = drawerState.turns
+    .filter(TURN_FILTERS[drawerState.mode])
+    .filter((t) => t.text || t.images || (t.files && t.files.length))
+  const matched = base.filter((t) => {
+    if (!qLower) return true
+    const hay = t.role === 'assistant' ? displayAssistantText(t.text, false) : String(t.text || '')
+    return hay.toLowerCase().includes(qLower)
+  })
+  // 最近的在最上面；没有时间的排到最后
+  const sorted = [...matched].sort((a, b) => (b.at || 0) - (a.at || 0))
 
   const note = el('drawer-note')
   if (note) {
-    note.textContent = {
+    const baseText = {
       user: `用户提问 ${counts.user} 条 · 原样展示，不摘要、不截断`,
-      all: `用户 ${counts.user} 条 + 智能体 ${counts.assistant} 条 · 全文`,
-      assistant: `智能体回答 ${counts.assistant} 条 · ${summary ? '摘要' : '全文'}`,
+      all: `用户 ${counts.user} 条 + 智能体 ${counts.assistant} 条 · 智能体仅结论`,
+      assistant: `智能体回答 ${counts.assistant} 条 · ${summary ? '摘要' : '结论全文'}（已隐藏思考/工具过程）`,
     }[drawerState.mode]
+    note.innerHTML = q ? `${esc(baseText)} · 匹配 ${matched.length} / ${base.length}` : esc(baseText)
   }
 
-  const list = drawerState.turns
-    .filter(TURN_FILTERS[drawerState.mode])
-    .filter((t) => t.text || t.images || (t.files && t.files.length))
-    .map((t, i) => {
-      const isUser = t.role === 'user'
-      const body = summary ? summarize(t.text) : t.text || ''
-      const imgs = t.images ? `<div class="turn-img">附件：${t.images} 张图片</div>` : ''
-      const files = (t.files || []).map((f) => `<div class="turn-img">文件：${esc(f)}</div>`).join('')
-      return `<div class="turn ${isUser ? 'user' : 'assistant'}">
-        <div class="turn-role">${isUser ? '用户' : '智能体'} · ${esc(fmtTime(t.at))}${isUser ? '' : ` · #${i + 1}`}</div>
-        <div class="turn-text${summary ? ' turn-summary' : ''}">${esc(body || '（无文字内容）')}</div>
-        ${imgs}${files}
-      </div>`
-    })
+  const ids = assistantIds().filter((id) => {
+    const t = drawerState.turns.find((x) => x._id === id)
+    const src = displayAssistantText(t?.text, summary)
+    return String(src || '').length > 120 || String(src || '').split('\n').filter(Boolean).length > 2
+  })
+  const allCollapsed = ids.length > 0 && ids.every((id) => drawerState.collapsed.has(id))
+  const collapseAll = el('drawer-collapse-all')
+  if (collapseAll) {
+    collapseAll.textContent = allCollapsed ? '全部展开' : '全部折叠'
+    collapseAll.classList.toggle('hidden', drawerState.mode === 'user')
+    collapseAll.disabled = !ids.length
+  }
+
+  const html = sorted.map((t) => {
+    const isUser = t.role === 'user'
+    const sourceText = isUser ? t.text || '' : displayAssistantText(t.text, summary)
+    const canCollapse = !isUser && (String(sourceText).length > 120 || String(sourceText).split('\n').filter(Boolean).length > 2)
+    const collapsed = canCollapse && drawerState.collapsed.has(t._id)
+    const body = collapsed ? firstLines(sourceText, 2) : sourceText
+    const imgs = t.images ? `<div class="turn-img">附件：${t.images} 张图片</div>` : ''
+    const files = (t.files || []).map((f) => `<div class="turn-img">文件：${esc(f)}</div>`).join('')
+    return `<div class="turn ${isUser ? 'user' : 'assistant'}${collapsed ? ' collapsed' : ''}">
+      <div class="turn-head">
+        <div class="turn-role">${isUser ? '用户' : '智能体'} · ${esc(fmtTime(t.at))}</div>
+        ${canCollapse ? `<button class="btn small turn-toggle" data-toggle-turn="${esc(t._id)}">${collapsed ? '展开' : '折叠'}</button>` : ''}
+      </div>
+      <div class="turn-text${summary ? ' turn-summary' : ''}">${highlightText(body || '（无文字内容）', q)}</div>
+      ${imgs}${files}
+    </div>`
+  })
 
   const box = el('drawer-turns')
   if (box) {
-    box.innerHTML = list.length
-      ? list.join('')
-      : `<div class="empty"><p>${drawerState.mode === 'user' ? '没有可读取的用户输入。' : drawerState.mode === 'assistant' ? '没有可读取的智能体回答。' : '没有可读取的对话内容。'}</p></div>`
+    box.innerHTML = html.length
+      ? html.join('')
+      : `<div class="empty"><p>${q ? '没有匹配的内容。' : drawerState.mode === 'user' ? '没有可读取的用户输入。' : drawerState.mode === 'assistant' ? '没有可读取的智能体回答。' : '没有可读取的对话内容。'}</p></div>`
   }
 }
 
 function renderDrawerContent() {
   const counts = drawerCounts()
-  el('drawer-body').innerHTML = `
-    <div class="drawer-toolbar">
+  const toolbar = el('drawer-toolbar')
+  toolbar.classList.remove('hidden')
+  toolbar.innerHTML = `
       <div class="seg">
         <button class="seg-btn" data-mode="user">用户输入<span class="seg-count">${counts.user}</span></button>
         <button class="seg-btn" data-mode="all">全部信息<span class="seg-count">${counts.all}</span></button>
@@ -670,9 +828,20 @@ function renderDrawerContent() {
         <button class="seg-btn" data-sub="summary">摘要</button>
         <button class="seg-btn" data-sub="full">全文</button>
       </div>
-    </div>
+      <div class="drawer-search">
+        <input id="drawer-search" class="input" placeholder="搜索当前标签页的内容…" spellcheck="false" />
+        <button class="btn small" id="drawer-collapse-all">全部折叠</button>
+      </div>`
+  el('drawer-body').innerHTML = `
     <div class="drawer-note muted" id="drawer-note"></div>
     <div id="drawer-turns"></div>`
+  el('drawer-search').value = drawerState.query
+  el('drawer-search').addEventListener('input', (e) => {
+    drawerState.query = e.target.value
+    renderDrawerTurnList()
+  })
+  // 助手默认折叠到两行，点展开再看全文
+  for (const id of assistantIds()) drawerState.collapsed.add(id)
   renderDrawerTurnList()
 }
 
@@ -683,11 +852,13 @@ async function openSession(key) {
   drawerState.turns = []
   drawerState.mode = 'user'
   drawerState.sub = 'summary'
+  drawerState.query = ''
+  drawerState.collapsed = new Set()
   renderSessions()
-  openDrawer(s?.title || '会话', `${s?.agentLabel || ''} · ${key}`, '<div class="empty"><p>读取会话内容…</p></div>')
+  openDrawer(sessionLabel(s) || '会话', `${s?.agentLabel || ''} · ${key}`, '<div class="empty"><p>读取会话内容…</p></div>')
   await guard(async () => {
     const d = await api.sessionDetail(state.repo, key)
-    drawerState.turns = d?.turns || []
+    drawerState.turns = (d?.turns || []).map((t, i) => ({ ...t, _id: `${key}:${i}` }))
     renderDrawerContent()
     el('drawer-body').scrollTop = 0
   })
@@ -863,6 +1034,159 @@ async function actNewTask() {
   })
 }
 
+/** 项目/会话的“重命名”只是本应用的显示名，不改目录、也不写 agent 数据。 */
+async function renameProject(repo) {
+  if (!repo) return
+  const current = state.aliases.projects?.[repo] || ''
+  await openModal({
+    title: '重命名项目（显示名）',
+    desc: '只影响本应用的显示，不改目录名，也不写入任何 agent 数据。留空恢复默认。',
+    fields: [{ name: 'name', label: '显示名', value: current, placeholder: prettyName(repo) }],
+    okText: '保存',
+    onSubmit: async (v) => {
+      const name = v.name.trim()
+      state.aliases = await api.aliasSet('project', repo, name)
+      renderAll()
+      if (state.repo === repo) renderProject()
+      toast(name ? '已更新项目显示名' : '已恢复项目默认名')
+    },
+  })
+}
+
+async function renameSession(key) {
+  const s = sessionsOf().find((x) => x.key === key)
+  if (!s) return
+  const current = state.aliases.sessions?.[s.key] || ''
+  await openModal({
+    title: '重命名会话（显示名）',
+    desc: '只影响本应用的显示，不改 agent 自己的会话标题。留空恢复默认。',
+    fields: [{ name: 'name', label: '显示名', value: current, placeholder: s.title }],
+    okText: '保存',
+    onSubmit: async (v) => {
+      const name = v.name.trim()
+      state.aliases = await api.aliasSet('session', s.key, name)
+      renderSessions()
+      if (drawerState.key === s.key) el('drawer-title').textContent = sessionLabel(s)
+      toast(name ? '已更新会话显示名' : '已恢复会话默认名')
+    },
+  })
+}
+
+// ─────────────────────────────── 清理
+
+function agentLabelOf(id) {
+  return state.agents.find((a) => a.id === id)?.label || id
+}
+
+function renderCleanupAgents() {
+  const agents = state.agents.filter((a) => a.available)
+  el('cleanup-hint').textContent = agents.length ? `${agents.length} 个可用 agent` : '没有可用的 agent'
+  el('cleanup-agents').innerHTML = agents
+    .map(
+      (a) =>
+        `<button class="chip${state.cleanupAgent === a.id ? ' active' : ''}" data-clean-agent="${esc(a.id)}">${esc(a.label)}</button>`,
+    )
+    .join('')
+  if (!state.cleanupAgent) {
+    el('cleanup-list-title').textContent = '会话'
+    el('cleanup-list').innerHTML = '<div class="muted">先选择上面的 Agent。</div>'
+    el('btn-cleanup-all').disabled = true
+  }
+}
+
+async function loadCleanup(agentId) {
+  state.cleanupAgent = agentId
+  renderCleanupAgents()
+  state.cleanupSessions = await withLoading('读取可清理会话…', () => api.cleanupList(agentId))
+  renderCleanupList()
+}
+
+function renderCleanupList() {
+  const list = state.cleanupSessions || []
+  const del = list.filter((x) => x.deletable)
+  const total = del.reduce((n, x) => n + (x.size || 0), 0)
+  el('cleanup-list-title').textContent = state.cleanupAgent
+    ? `${agentLabelOf(state.cleanupAgent)} 的会话 · ${list.length}`
+    : '会话'
+  const btn = el('btn-cleanup-all')
+  btn.disabled = !del.length
+  btn.textContent = del.length ? `全部清理（${del.length}）` : '全部清理'
+
+  const box = el('cleanup-list')
+  if (!state.cleanupAgent) {
+    box.innerHTML = '<div class="muted">先选择上面的 Agent。</div>'
+    return
+  }
+  if (!list.length) {
+    box.innerHTML = '<div class="empty"><p>这个 agent 没有可读取的会话。</p></div>'
+    return
+  }
+  box.innerHTML =
+    `<div class="cleanup-summary">可清理 ${del.length} 条 · 共 ${humanSize(total)}${list.length > del.length ? ` · ${list.length - del.length} 条不支持逐条清理` : ''}</div>` +
+    list
+      .map(
+        (r) => `<div class="cleanup-row">
+          <div class="cleanup-main">
+            <div class="cleanup-title">${esc(r.title || r.key)}</div>
+            <div class="cleanup-sub">${esc(r.key)} · ${esc(fmtTime(r.updatedAt))} · ${humanSize(r.size)}${r.deletable ? '' : ` · ${esc(r.reason || '不支持')}`}</div>
+          </div>
+          <button class="btn small${r.deletable ? ' danger' : ''}" data-clean-key="${esc(r.key)}" ${r.deletable ? '' : 'disabled'}>
+            ${r.deletable ? '清理' : '不支持'}
+          </button>
+        </div>`,
+      )
+      .join('')
+}
+
+async function afterCleanup() {
+  await guard(async () => {
+    state.cleanupSessions = await api.cleanupList(state.cleanupAgent)
+    renderCleanupList()
+  }, '刷新清理列表失败：')
+  guard(async () => {
+    state.repos = await api.repos(true)
+    renderAll()
+    if (state.repo) await loadProject(state.repo)
+  }, '刷新项目失败：')
+  guard(async () => {
+    state.disk = await api.disk(true)
+    renderOverview()
+  }, '刷新磁盘统计失败：')
+}
+
+async function cleanupOne(key) {
+  const row = state.cleanupSessions.find((x) => x.key === key)
+  if (!row?.deletable) return
+  await openModal({
+    title: '清理这条会话？',
+    desc: `将移到系统废纸篓 / 回收站（可恢复）：\n${row.title || row.key}\n${row.path}`,
+    okText: '移到废纸篓',
+    onSubmit: async () => {
+      await withLoading('正在移到废纸篓…', () => api.cleanupOne(key))
+      toast('已移到废纸篓')
+      await afterCleanup()
+    },
+  })
+}
+
+async function cleanupAll() {
+  const del = state.cleanupSessions.filter((x) => x.deletable)
+  if (!del.length) return
+  const total = del.reduce((n, x) => n + (x.size || 0), 0)
+  await openModal({
+    title: `清理 ${agentLabelOf(state.cleanupAgent)} 的全部可清理会话？`,
+    desc: `共 ${del.length} 条 · ${humanSize(total)}。全部移到系统废纸篓 / 回收站（可恢复）。\n\n共享 SQLite 数据库里的会话不会被动。`,
+    okText: '全部移到废纸篓',
+    onSubmit: async () => {
+      const r = await withLoading('正在清理…', () => api.cleanupAll(state.cleanupAgent))
+      toast(r.errors?.length ? `清理 ${r.removed} 条，${r.errors.length} 条失败` : `已清理 ${r.removed} 条`, Boolean(r.errors?.length))
+      await afterCleanup()
+    },
+  })
+}
+
+
+
 // ─────────────────────────────── 设置
 
 function renderSettings() {
@@ -872,7 +1196,7 @@ function renderSettings() {
   }
   fill('settings-paths', [
     ['数据目录', b.dataDir],
-    ['MCP 配置', b.configPath],
+    ['配置文件', b.configPath],
   ])
   const v = api?.versions || {}
   fill('settings-versions', [
@@ -882,6 +1206,139 @@ function renderSettings() {
     ['Chromium', v.chrome],
     ['平台', api?.platform],
   ])
+  guard(() => renderCustomAgents())
+}
+
+async function renderCustomAgents() {
+  const box = el('custom-agents-list')
+  if (!box) return
+  const cfg = await api.configGet()
+  const list = cfg?.customAgents || []
+  if (!list.length) {
+    box.innerHTML = '<div class="muted">还没有扩展 Agent。点右上角「添加」配置一个非内置数据源。</div>'
+    return
+  }
+  box.innerHTML = list
+    .map(
+      (a, i) => `<div class="custom-agent-row" data-custom-idx="${i}">
+      <div class="meta">
+        <strong>${esc(a.label || a.id)} <span class="muted">${esc(a.id)}</span></strong>
+        <div class="path">${esc(a.type)} · ${esc(a.path || '—')}</div>
+      </div>
+      <div class="acts">
+        <button class="btn small" data-custom-edit="${i}">编辑</button>
+        <button class="btn small danger" data-custom-del="${i}">删除</button>
+      </div>
+    </div>`,
+    )
+    .join('')
+}
+
+function parseMapJson(raw) {
+  const t = String(raw || '').trim()
+  if (!t) return undefined
+  const obj = JSON.parse(t)
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error('map 必须是 JSON 对象')
+  return obj
+}
+
+function parseRoleMap(raw) {
+  const t = String(raw || '').trim()
+  if (!t) return undefined
+  const obj = JSON.parse(t)
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error('roleMap 必须是 JSON 对象')
+  return obj
+}
+
+async function editCustomAgent(existing = null, index = -1) {
+  const isEdit = index >= 0 && existing
+  const values = await openModal({
+    title: isEdit ? '编辑扩展 Agent' : '添加扩展 Agent',
+    desc: '配置会写入 ~/.config/agent-session-sync/config.json 的 customAgents，与 CLI 共用。保存后点顶部「刷新」重新扫描。',
+    okText: '保存',
+    fields: [
+      { name: 'id', label: 'ID（英文，唯一）', value: existing?.id || '', placeholder: 'my-agent' },
+      { name: 'label', label: '显示名', value: existing?.label || '', placeholder: 'My Agent' },
+      {
+        name: 'type',
+        label: '类型',
+        type: 'select',
+        value: existing?.type || 'jsonl',
+        options: [
+          { value: 'jsonl', label: 'jsonl（一行一条）' },
+          { value: 'json', label: 'json（一个文件一个会话）' },
+          { value: 'sqlite', label: 'sqlite' },
+        ],
+      },
+      { name: 'path', label: '数据路径', value: existing?.path || '', placeholder: '~/.my-agent/sessions' },
+      {
+        name: 'map',
+        label: '字段映射 map（JSON）',
+        type: 'textarea',
+        rows: 6,
+        value: existing?.map ? JSON.stringify(existing.map, null, 2) : '{\n  "id": "id",\n  "cwd": "cwd",\n  "title": "title",\n  "role": "role",\n  "text": "text",\n  "timestamp": "timestamp"\n}',
+      },
+      {
+        name: 'records',
+        label: 'records（仅 json：消息数组字段）',
+        value: existing?.records || '',
+        placeholder: 'history',
+      },
+      {
+        name: 'query',
+        label: 'query（仅 sqlite）',
+        type: 'textarea',
+        rows: 3,
+        value: existing?.query || '',
+        placeholder: 'select id, cwd, title, role, text, timestamp from messages order by timestamp',
+      },
+      {
+        name: 'roleMap',
+        label: 'roleMap（可选 JSON）',
+        type: 'textarea',
+        rows: 2,
+        value: existing?.roleMap ? JSON.stringify(existing.roleMap, null, 2) : '',
+        placeholder: '{ "gemini": "assistant" }',
+      },
+      { name: 'hint', label: '备注 hint（可选）', value: existing?.hint || '' },
+    ],
+    onSubmit: async (v) => {
+      const id = String(v.id || '').trim()
+      if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(id)) throw new Error('ID 需以字母开头，只含字母数字_-')
+      const pathVal = String(v.path || '').trim()
+      if (!pathVal) throw new Error('请填写数据路径')
+      const type = v.type
+      const agent = {
+        id,
+        label: String(v.label || '').trim() || id,
+        type,
+        path: pathVal,
+      }
+      const map = parseMapJson(v.map)
+      if (map) agent.map = map
+      const records = String(v.records || '').trim()
+      if (records) agent.records = records
+      const query = String(v.query || '').trim()
+      if (query) agent.query = query
+      if (type === 'sqlite' && !query) throw new Error('sqlite 类型必须填写 query')
+      const roleMap = parseRoleMap(v.roleMap)
+      if (roleMap) agent.roleMap = roleMap
+      const hint = String(v.hint || '').trim()
+      if (hint) agent.hint = hint
+
+      const cfg = await api.configGet()
+      const list = [...(cfg.customAgents || [])]
+      if (isEdit) list[index] = agent
+      else {
+        if (list.some((x) => x.id === id)) throw new Error(`已存在 id=${id}`)
+        list.push(agent)
+      }
+      await api.configSaveCustomAgents(list)
+      toast(isEdit ? '已更新扩展 Agent' : '已添加扩展 Agent')
+      await renderCustomAgents()
+    },
+  })
+  return values
 }
 
 // ─────────────────────────────── 事件绑定
@@ -900,12 +1357,23 @@ function bind() {
     }),
   )
   el('btn-load').addEventListener('click', () => loadProject(el('repo-input').value))
+  el('btn-rename-project').addEventListener('click', () => guard(() => renameProject(state.repo || el('repo-input').value)))
   el('repo-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') loadProject(el('repo-input').value)
   })
 
   el('btn-task-new').addEventListener('click', actNewTask)
   el('btn-note-add').addEventListener('click', actAddNote)
+
+  el('cleanup-agents').addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-clean-agent]')
+    if (chip) guard(() => loadCleanup(chip.dataset.cleanAgent))
+  })
+  el('cleanup-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-clean-key]')
+    if (btn) guard(() => cleanupOne(btn.dataset.cleanKey))
+  })
+  el('btn-cleanup-all').addEventListener('click', () => guard(cleanupAll))
 
   $$('.actions [data-act]').forEach((btn) =>
     btn.addEventListener('click', () =>
@@ -926,6 +1394,12 @@ function bind() {
 
   // 事件委托：会话行 / 任务卡 / 笔记完成 / 项目卡 / agent chips
   el('sessions-table').addEventListener('click', (e) => {
+    const rename = e.target.closest('[data-rename-session]')
+    if (rename) {
+      e.stopPropagation()
+      guard(() => renameSession(rename.dataset.renameSession))
+      return
+    }
     const row = e.target.closest('[data-key]')
     if (row) guard(() => openSession(row.dataset.key))
   })
@@ -938,6 +1412,12 @@ function bind() {
     if (btn) guard(() => actDone(btn.dataset.done))
   })
   el('repos-grid').addEventListener('click', (e) => {
+    const edit = e.target.closest('[data-edit-repo]')
+    if (edit) {
+      e.stopPropagation()
+      guard(() => renameProject(edit.dataset.editRepo))
+      return
+    }
     const card = e.target.closest('[data-repo]')
     if (!card) return
     guard(async () => {
@@ -956,7 +1436,41 @@ function bind() {
     renderAll()
   })
 
-  el('drawer-body').addEventListener('click', (e) => {
+  el('btn-custom-add')?.addEventListener('click', () => guard(() => editCustomAgent(null, -1)))
+  el('custom-agents-list')?.addEventListener('click', (e) => {
+    const edit = e.target.closest('[data-custom-edit]')
+    if (edit) {
+      guard(async () => {
+        const cfg = await api.configGet()
+        const i = Number(edit.dataset.customEdit)
+        await editCustomAgent(cfg.customAgents?.[i], i)
+      })
+      return
+    }
+    const del = e.target.closest('[data-custom-del]')
+    if (del) {
+      guard(async () => {
+        const cfg = await api.configGet()
+        const i = Number(del.dataset.customDel)
+        const a = cfg.customAgents?.[i]
+        if (!a) return
+        const ok = await openModal({
+          title: '删除扩展 Agent',
+          desc: `确定删除「${a.label || a.id}」？仅从配置里移除，不会删除该 agent 的会话文件。`,
+          okText: '删除',
+          fields: [],
+        })
+        if (!ok) return
+        const list = [...(cfg.customAgents || [])]
+        list.splice(i, 1)
+        await api.configSaveCustomAgents(list)
+        toast('已删除')
+        await renderCustomAgents()
+      })
+    }
+  })
+
+  const onDrawerClick = (e) => {
     const mode = e.target.closest('[data-mode]')
     if (mode) {
       drawerState.mode = mode.dataset.mode
@@ -969,8 +1483,31 @@ function bind() {
       drawerState.sub = sub.dataset.sub
       el('drawer-body').scrollTop = 0
       renderDrawerTurnList()
+      return
     }
-  })
+    const toggle = e.target.closest('[data-toggle-turn]')
+    if (toggle) {
+      const id = toggle.dataset.toggleTurn
+      if (drawerState.collapsed.has(id)) drawerState.collapsed.delete(id)
+      else drawerState.collapsed.add(id)
+      renderDrawerTurnList()
+      return
+    }
+    if (e.target.closest('#drawer-collapse-all')) {
+      const candidates = assistantIds().filter((id) => {
+        const t = drawerState.turns.find((x) => x._id === id)
+        const src = displayAssistantText(t?.text, drawerState.mode === 'assistant' && drawerState.sub === 'summary')
+        return String(src || '').length > 120 || String(src || '').split('\n').filter(Boolean).length > 2
+      })
+      const allCollapsed = candidates.length > 0 && candidates.every((id) => drawerState.collapsed.has(id))
+      if (allCollapsed) for (const id of candidates) drawerState.collapsed.delete(id)
+      else for (const id of candidates) drawerState.collapsed.add(id)
+      renderDrawerTurnList()
+    }
+  }
+  el('drawer-toolbar').addEventListener('click', onDrawerClick)
+  el('drawer-body').addEventListener('click', onDrawerClick)
+  el('drawer-rename').addEventListener('click', () => guard(() => renameSession(drawerState.key)))
   el('drawer-close').addEventListener('click', closeDrawer)
   el('drawer-mask').addEventListener('click', closeDrawer)
   document.addEventListener('keydown', (e) => {

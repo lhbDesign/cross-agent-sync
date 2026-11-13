@@ -29,6 +29,9 @@
       <button class="nav-item" data-tab="all">
         <span class="nav-ico">⊞</span><span>全部项目</span>
       </button>
+      <button class="nav-item" data-tab="cleanup">
+        <span class="nav-ico">⌫</span><span>清理</span>
+      </button>
       <button class="nav-item" data-tab="settings">
         <span class="nav-ico">⚙</span><span>设置</span>
       </button>
@@ -80,6 +83,7 @@
           <input id="repo-input" class="input" placeholder="输入项目目录，或点击右侧选择…" spellcheck="false" />
           <button class="btn" id="btn-pick">选择目录</button>
           <button class="btn primary" id="btn-load">加载</button>
+          <button class="btn" id="btn-rename-project">重命名</button>
         </div>
 
         <div id="project-empty" class="empty">
@@ -141,6 +145,34 @@
         </div>
       </section>
 
+      <!-- 清理 -->
+      <section class="view" id="view-cleanup">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>选择 Agent</h2>
+            <span class="muted" id="cleanup-hint"></span>
+          </div>
+          <div class="chips" id="cleanup-agents"></div>
+          <p class="prose muted" style="margin-top:12px">
+            只清理「一个文件 / 一个目录 = 一条会话」的来源：Claude、Codex、CodeBuddy、WorkBuddy、Kiro、DSH、Qoder 的 JSONL。
+            Cursor / OpenCode / Trae / 通义灵码 / Qoder 桌面库是共享 SQLite，不在这里删——
+            逐条改库会违背只读边界，请在对应 agent 内清理。
+          </p>
+          <p class="prose muted">
+            「清理」= 移到系统废纸篓 / 回收站，可恢复；不会永久删除。清空废纸篓后磁盘才会真正释放。
+          </p>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2 id="cleanup-list-title">会话</h2>
+            <button class="btn small danger" id="btn-cleanup-all" disabled>全部清理</button>
+          </div>
+          <div id="cleanup-list" class="cleanup-list">
+            <div class="muted">先选择上面的 Agent。</div>
+          </div>
+        </div>
+      </section>
+
       <!-- 设置 -->
       <section class="view" id="view-settings">
         <div class="panel">
@@ -150,6 +182,19 @@
         <div class="panel">
           <div class="panel-head"><h2>版本</h2></div>
           <dl class="kv" id="settings-versions"></dl>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>扩展 Agent</h2>
+            <button class="btn small" id="btn-custom-add">添加</button>
+          </div>
+          <p class="prose muted" style="margin-top:0">
+            内置列表里没有的 agent，可在这里按 jsonl / json / sqlite 配置后读取会话。
+            写入 <code>~/.config/agent-session-sync/config.json</code> 的 <code>customAgents</code>，与 CLI 共用。
+          </p>
+          <div id="custom-agents-list" class="custom-agents-list">
+            <div class="muted">加载中…</div>
+          </div>
         </div>
         <div class="panel">
           <div class="panel-head"><h2>只读边界</h2></div>
@@ -175,17 +220,22 @@
       <div class="drawer-title" id="drawer-title">会话</div>
       <div class="drawer-sub" id="drawer-sub"></div>
     </div>
+    <button class="btn ghost icon" id="drawer-rename" title="重命名显示名">✎</button>
     <button class="btn ghost icon" id="drawer-close">✕</button>
   </div>
+  <!-- 工具栏固定在滚动区外，避免会话内容透到 header 下方 -->
+  <div class="drawer-toolbar hidden" id="drawer-toolbar"></div>
   <div class="drawer-body" id="drawer-body"></div>
 </aside>
 
-<!-- 通用弹窗 -->
+<!-- 通用弹窗：高度随窗口自适应，表单区可滚，底部按钮始终可见 -->
 <div class="modal-mask hidden" id="modal-mask">
   <div class="modal" id="modal">
-    <h3 id="modal-title"></h3>
-    <p class="modal-desc" id="modal-desc"></p>
-    <div id="modal-fields"></div>
+    <div class="modal-top">
+      <h3 id="modal-title"></h3>
+      <p class="modal-desc" id="modal-desc"></p>
+    </div>
+    <div class="modal-fields" id="modal-fields"></div>
     <div class="modal-actions" id="modal-actions">
       <button class="btn ghost" id="modal-cancel">取消</button>
       <button class="btn primary" id="modal-ok">确定</button>

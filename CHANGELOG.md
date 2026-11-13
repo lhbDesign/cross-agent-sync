@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-11-13
+
+### 桌面端
+
+- 新增「清理」页：按 Agent 选择，支持单条 / 全部清理；只处理文件型会话来源，
+  共享 SQLite（Cursor / OpenCode / Trae / 灵码 / Qoder 桌面库）明确不支持；
+  清理 = 移到系统废纸篓 / 回收站，可恢复。
+- 会话抽屉增强：每种模式增加搜索框与命中高亮；消息按时间倒序；用户 / 助手不同底色；
+  助手回答可逐条折叠（两行 + `line-clamp`），顶部支持全部折叠 / 展开；
+  工具栏移出滚动区，避免内容透到 header 下方。
+- **智能体回答只保留结论**：隐藏 `▸ Bash:` / Read / Edit 等工具与思考过程轮次。
+- 设置页新增「扩展 Agent」：可视化增删改 `customAgents`（与 CLI 共用配置文件）；
+  弹窗高度随窗口自适应，表单可滚、底部按钮始终可见。
+- 首页「会话数分布」按「磁盘占用」同一 agent 顺序对齐。
+- 项目、会话支持「显示名」重命名：只写本应用的 `desktop-aliases.json`，
+  不改目录名，也不改 agent 自己的会话标题。
+- 修复「全部项目」会话数与项目页不一致：用 `repos` 的 `keys` + 全量会话
+  （`--limit 100000`）精确过滤。
+- 构建产物忽略 `desktop/Sync/`（误生成的临时挂载拷贝）。
+
 ## [1.3.0] — 2026-11-13
 
 ### 新增
@@ -389,7 +409,10 @@
 - Gemini CLI 的会话记录里没有仓库路径，只能通过 `ass list --all` 看到，无法按仓库过滤。
 - Trae / Windsurf / VS Code Copilot Chat 的存储结构还没摸清，`ass detect` 能找到库文件但不解析。
 
-[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.3.0...v1.3.2
+[1.3.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/lhbDesign/cross-agent-sync/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/lhbDesign/cross-agent-sync/compare/v0.4.1...v1.0.0

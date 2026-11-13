@@ -28,6 +28,13 @@ contextBridge.exposeInMainWorld('ass', {
   reveal: (p) => ipcRenderer.invoke('ass:reveal', { path: p }),
   copy: (text) => ipcRenderer.invoke('ass:copy', { text }),
   saveText: (name, text) => ipcRenderer.invoke('ass:saveText', { name, text }),
+  aliases: () => ipcRenderer.invoke('ass:aliases'),
+  aliasSet: (kind, key, name) => ipcRenderer.invoke('ass:aliasSet', { kind, key, name }),
+  configGet: () => ipcRenderer.invoke('ass:configGet'),
+  configSaveCustomAgents: (customAgents) => ipcRenderer.invoke('ass:configSaveCustomAgents', { customAgents }),
+  cleanupList: (agent) => ipcRenderer.invoke('ass:cleanupList', { agent }),
+  cleanupOne: (key) => ipcRenderer.invoke('ass:cleanupOne', { key }),
+  cleanupAll: (agent) => ipcRenderer.invoke('ass:cleanupAll', { agent }),
 
   platform: process.platform,
   versions: {

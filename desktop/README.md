@@ -27,6 +27,23 @@ desktop/
 - `ELECTRON_RUN_AS_NODE=1` + `ASS_REEXEC=1` 直接用 Electron 内置 Node 跑 CLI，不必额外打包 Node；
 - 某些 macOS 安全软件会往 stdout 注入 `[LSDEfsError]` 之类噪音，`cli.mjs` 会先清洗再解析 JSON。
 
+## 桌面端功能
+
+- **会话抽屉**：用户输入 / 全部信息 / 智能体回答三种模式；每种模式都有搜索框；
+  消息按时间倒序（最近的在最上面）；用户与助手用不同底色区分；
+  每条助手回答可单独折叠，顶部可「全部折叠 / 全部展开」，折叠时保留前两行。
+- **清理**：左侧「清理」页 → 选 Agent → 单条清理或全部清理。
+  - 只处理「一个文件 / 一个目录 = 一条会话」的来源：Claude、Codex、CodeBuddy、WorkBuddy、
+    Kiro、DSH、Qoder JSONL、Continue / Gemini JSON。
+  - Cursor / OpenCode / Trae / 通义灵码 / Qoder 桌面库是共享 SQLite，不在这里删——
+    逐条改库会违背只读边界，请在对应 agent 内清理。
+  - 「清理」= 移到系统废纸篓 / 回收站，可恢复；清空废纸篓后才真正释放磁盘。
+- **显示名**：项目卡片、项目页、会话行、会话抽屉里的 ✎ 可以改显示名。
+  只写入 `~/.local/share/agent-session-sync/desktop-aliases.json`，
+  不改目录名，也不改 agent 自己的会话标题；留空恢复默认。
+- **计数一致**：全部项目的会话数来自 `repos --json` 的 `keys`；项目页用同一份 keys
+  过滤全量会话（显式 `--limit 100000`），避免 CLI 默认 15 条截断导致「卡片 31、进来 9」。
+
 ## 开发
 
 要求 **Node ≥ 22.12**（Electron 45 的 engines 限制）。本目录有 `.nvmrc`：

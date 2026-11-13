@@ -26,6 +26,7 @@ share-deck/
 desktop/node_modules/
 desktop/runtime/
 desktop/release/
+desktop/Sync/
 desktop/assets/*.icns
 desktop/assets/*.ico
 desktop/assets/*.png

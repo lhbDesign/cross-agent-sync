@@ -261,11 +261,17 @@ fs.writeFileSync(path.join(assets, 'icon-512.png'), encodePng(cache.get(512), 51
 const out = path.join(assets, 'icon.icns')
 const r = spawnSync('iconutil', ['-c', 'icns', iconset, '-o', out], { stdio: 'inherit' })
 if (r.status !== 0) {
-  console.error('iconutil 失败 —— 图标已生成在 assets/icon.iconset，可手工转 icns')
-  process.exit(1)
+  // 本机 iconutil 偶发拒收手写 PNG；已有可用 icns 时继续构建，不挡打包
+  if (fs.existsSync(out) && fs.statSync(out).size > 1024) {
+    console.warn(`iconutil 失败，沿用已有 ${out}（${(fs.statSync(out).size / 1024).toFixed(0)} KB）`)
+  } else {
+    console.error('iconutil 失败且没有可用的 icon.icns —— 图标已生成在 assets/icon.iconset，可手工转 icns')
+    process.exit(1)
+  }
+} else {
+  fs.rmSync(iconset, { recursive: true, force: true })
+  console.log(`✅ ${out}（${(fs.statSync(out).size / 1024).toFixed(0)} KB）`)
 }
-fs.rmSync(iconset, { recursive: true, force: true })
-console.log(`✅ ${out}（${(fs.statSync(out).size / 1024).toFixed(0)} KB）`)
 
 // ─────────────────────────────── ICO（Windows）
 // Vista+ 支持 ICO 内直接放 PNG，所以不必写 BMP 编码。

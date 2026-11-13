@@ -31,8 +31,8 @@ await check('agents --json --fast', async () => {
 await check('repos --json', async () => {
   const r = await runJson(['repos', '--json'], { cwd: repo })
   if (!Array.isArray(r)) throw new Error('应为数组')
-  if (!r.every((x) => x.repo && typeof x.sessions === 'number' && x.byAgent && typeof x.byAgent === 'object')) {
-    throw new Error('缺少 repo / sessions / byAgent')
+  if (!r.every((x) => x.repo && typeof x.sessions === 'number' && x.byAgent && typeof x.byAgent === 'object' && Array.isArray(x.keys))) {
+    throw new Error('缺少 repo / sessions / byAgent / keys')
   }
   return `${r.length} 个项目`
 })
