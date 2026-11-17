@@ -4,6 +4,7 @@ import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionM
 import { HOME, cleanUserText, exists, gitRoot, isInjected, plain, projectName, readJsonFile } from '../util'
 import { lit, openSqlite, type Db } from '../sqlite'
 import { sessionTitle } from './title'
+import { normalizeUsage } from './usage'
 
 /**
  * Cursor：<User>/globalStorage/state.vscdb（SQLite）
@@ -317,7 +318,7 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
     const text = cleanUserText(String(b.text || ''))
     if (!text && images.length === 0) continue
     if (role === 'user' && isInjected(text) && images.length === 0) continue
-    all.push({ role, text, images: images.length ? images : undefined })
+    all.push({ role, text, images: images.length ? images : undefined, usage: role === 'assistant' ? normalizeUsage(b.tokenCount) : undefined })
   }
   return opts.tail ? all.slice(-opts.tail) : all
 }

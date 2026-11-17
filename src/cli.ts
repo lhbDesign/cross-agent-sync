@@ -33,6 +33,7 @@ import { applyContextChange, type ContextPatch, addContext, contextFile, context
 import { LEVELS, estimateTokens, parseLevel } from './core/budget'
 import { armGuard, assertWritable, guardSummary, protectedPaths } from './core/roguard'
 import { buildAdapters } from './adapters/registry'
+import { mergeUsage, usageText, usageTitle } from './adapters/usage'
 import { formatSearchResult, searchSessions } from './core/search'
 import {
   detectAgents,
@@ -129,7 +130,8 @@ function printList(sessions: SessionMeta[], opts: { showRepo: boolean }): void {
     const label = repoLabel(s)
     const repo = opts.showRepo && label ? c.dim(` [${label}]`) : ''
     const partial = s.extra?.partial ? c.yellow(' ·部分') : ''
-    console.log(`${idx} ${agent} ${c.dim(time)}  ${plain(s.title, 46)}${repo} ${turns}${partial}`)
+    const usage = usageText(s.usage)
+    console.log(`${idx} ${agent} ${c.dim(time)}  ${plain(s.title, 46)}${repo} ${turns}${partial}${usage ? `  ${c.dim(usage)}` : ''}`)
     if (s.preview) console.log(`${' '.repeat(w)} ${c.dim(' '.repeat(9) + ' ' + plain(s.preview, 100))}`)
   })
 }
@@ -137,8 +139,9 @@ function printList(sessions: SessionMeta[], opts: { showRepo: boolean }): void {
 function printTurns(turns: Turn[]): void {
   for (const t of turns) {
     const who = t.role === 'user' ? c.green('用户') : t.role === 'tool' ? c.dim('工具') : c.cyan('助手')
+    const usage = usageText(t.usage)
     console.log('')
-    console.log(`${who} ${c.dim(t.at ? fmtTime(t.at) : '')}`)
+    console.log(`${who} ${c.dim(t.at ? fmtTime(t.at) : '')}${usage ? `  ${c.dim(usage)}` : ''}`)
     const body = plain(t.text, 2000)
     for (const line of body.split('\n')) console.log(`  ${line}`)
     if (t.images?.length) console.log(`  ${c.yellow(`[${t.images.length} 张图片]`)}`)
@@ -279,12 +282,12 @@ function cmdStatus(args: Args, cfg: Config): void {
       `${c.dim(l.date)} ${c.dim(l.turns.padEnd(4))} ${title}`
     // 标题和最新一句常常是同一句（只有 1 轮时），重复显示没意义
     const preview = s.preview && s.preview !== s.title ? truncWidth(plain(s.preview, 300), cols - leadW) : ''
-    return { left, ref: refs[i]!, preview, pad: dispWidth(head) }
+    return { left, ref: refs[i]!, preview, pad: dispWidth(head), usage: usageText(s.usage) }
   })
   const w = Math.max(...rows.map((r) => r.pad), 0)
   const indent = ' '.repeat(leadW)
   for (const r of rows) {
-    console.log(`${r.left}${' '.repeat(Math.max(w - r.pad, 1))}${c.cyan(r.ref)}`)
+    console.log(`${r.left}${' '.repeat(Math.max(w - r.pad, 1))}${c.cyan(r.ref)}${r.usage ? `  ${c.dim(r.usage)}` : ''}`)
     if (r.preview) console.log(`${indent}${c.dim(r.preview)}`)
   }
 
@@ -403,12 +406,13 @@ function cmdShow(args: Args, cfg: Config): void {
         {
           session: s.key,
           meta: s,
-          turns: turns.map(({ role, text, at, images, files }) => ({
+          turns: turns.map(({ role, text, at, images, files, usage }) => ({
             role,
             text,
             at,
             images: images?.length || 0,
             files: (files || []).map((f) => f.name),
+            usage,
           })),
         },
         null,
@@ -433,6 +437,13 @@ function cmdShow(args: Args, cfg: Config): void {
   console.log(c.dim('对话记录：已解析的用户和助手消息；工具返回等部分原始日志内容可能不包含在内。'))
   const tail = args.flags.full ? undefined : Number(args.flags.tail || 6)
   const turns = readSession(found, tail ? { tail } : {})
+  if (args.flags.full) {
+    const total = mergeUsage(turns.map((t) => t.usage))
+    if (total) {
+      console.log(`Token   ${usageText(total)}`)
+      if (usageTitle(total)) console.log(`        ${c.dim(usageTitle(total))}`)
+    }
+  }
   if (turns.length) {
     console.log('')
     console.log(c.dim(tail ? `—— 最后 ${turns.length} 条 ——` : `—— 全部 ${turns.length} 条 ——`))

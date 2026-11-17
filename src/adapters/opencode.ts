@@ -3,6 +3,7 @@ import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionM
 import { HOME, cleanUserText, exists, gitRoot, isInjected, parseDataUrl, plain, projectName } from '../util'
 import { lit, openSqlite, type Db } from '../sqlite'
 import { sessionTitle } from './title'
+import { normalizeUsage } from './usage'
 
 /**
  * OpenCode：~/.local/share/opencode/opencode.db（SQLite）
@@ -47,11 +48,23 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
     t1: number
     turns: number
     lasttxt: string | null
+    token_in: number | null
+    token_out: number | null
+    token_total: number | null
+    token_cost: number | null
   }>(
     // lasttxt = 最后一条用户消息的正文。正文在 part 表里，所以要「先定位最后一条 user
     // message，再取它的 text part」。放在同一条 SQL 里做，避免 22+ 个会话各查一遍。
     `select s.id, s.title, s.directory, p.worktree, s.model, s.time_created as t0, s.time_updated as t1,
             (select count(*) from message m where m.session_id = s.id and json_extract(m.data,'$.role')='user') as turns,
+            (select sum(json_extract(m.data,'$.tokens.input')) from message m
+              where m.session_id = s.id and json_extract(m.data,'$.role')='assistant') as token_in,
+            (select sum(json_extract(m.data,'$.tokens.output')) from message m
+              where m.session_id = s.id and json_extract(m.data,'$.role')='assistant') as token_out,
+            (select sum(json_extract(m.data,'$.tokens.total')) from message m
+              where m.session_id = s.id and json_extract(m.data,'$.role')='assistant') as token_total,
+            (select sum(json_extract(m.data,'$.cost')) from message m
+              where m.session_id = s.id and json_extract(m.data,'$.role')='assistant') as token_cost,
             (select group_concat(json_extract(pt.data,'$.text'), ' ')
                from part pt
               where pt.message_id = (select m2.id from message m2
@@ -77,6 +90,16 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
     const repo = cwd ? gitRoot(cwd) : null
     const text = usable[i] || fallback.get(r.id) || ''
     const preview = text ? plain(text, 140) : ''
+    const hasTokens = r.token_total != null || r.token_in != null || r.token_out != null
+    const tokenUsage = hasTokens
+      ? {
+          unit: 'token' as const,
+          input: r.token_in ?? undefined,
+          output: r.token_out ?? undefined,
+          total: r.token_total ?? undefined,
+          cost: r.token_cost ?? undefined,
+        }
+      : undefined
     return {
       key: `opencode:${r.id}`,
       agent: 'opencode',
@@ -95,6 +118,7 @@ function list(_opts: ListOptions, _ctx: AdapterCtx): SessionMeta[] {
       branch: null,
       source: DB_FILE,
       size: 0,
+      usage: tokenUsage,
     }
   })
 }
@@ -183,7 +207,7 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
     const text = cleanUserText(texts.join('\n'))
     if (!text && images.length === 0) continue
     if (role === 'user' && isInjected(text) && images.length === 0) continue
-    turns.push({ role, text, at: m.t || undefined, images: images.length ? images : undefined, files: files.length ? files : undefined })
+    turns.push({ role, text, at: m.t || undefined, images: images.length ? images : undefined, files: files.length ? files : undefined, usage: role === 'assistant' ? normalizeUsage(info) : undefined })
   }
   return turns
 }

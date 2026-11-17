@@ -7,6 +7,7 @@ import readline from 'node:readline'
 import { loadConfig, type Config } from './config'
 import { buildBrief, buildSummary } from './core/brief'
 import { parseLevel } from './core/budget'
+import { usageText } from './adapters/usage'
 import { armGuard } from './core/roguard'
 import { buildAdapters } from './adapters/registry'
 import { latestNote, listNotes, saveNote } from './core/handoff'
@@ -90,9 +91,10 @@ function fmtList(sessions: ReturnType<typeof listSessions>['sessions']): string 
   if (!sessions.length) return '没有找到会话。'
   const lines = sessions.map((s, i) => {
     const when = fmtTime(s.updatedAt || s.startedAt)
+    const usage = usageText(s.usage)
     return (
       `${i + 1}. [${s.agentLabel}] ${s.title}\n` +
-      `   key: \`${s.key}\` · ${when} · ${s.turns} 轮用户输入${s.model ? ` · ${s.model}` : ''}` +
+      `   key: \`${s.key}\` · ${when} · ${s.turns} 轮用户输入${s.model ? ` · ${s.model}` : ''}${usage ? ` · ${usage}` : ''}` +
       (s.repo ? `\n   仓库: \`${s.repo}\`` : '') +
       (s.preview ? `\n   ${plain(s.preview, 140)}` : '')
     )
@@ -103,7 +105,10 @@ function fmtList(sessions: ReturnType<typeof listSessions>['sessions']): string 
 function turnsToMarkdown(turns: Turn[]): string {
   return turns
     .filter((t) => t.role !== 'tool')
-    .map((t) => `## ${t.role === 'user' ? '用户' : '助手'}\n${t.text || '*(仅图片)*'}`)
+    .map((t) => {
+      const usage = usageText(t.usage)
+      return `## ${t.role === 'user' ? '用户' : '助手'}${usage ? ` · ${usage}` : ''}\n${t.text || '*(仅图片)*'}`
+    })
     .join('\n\n')
 }
 
@@ -243,7 +248,8 @@ const TOOLS: ToolDef[] = [
     description:
       'Read the raw message history of one session. mode=summary (default) gives a one-screen overview, ' +
       'mode=tail gives the last N messages, mode=full returns the whole conversation verbatim ' +
-      '(can be very large — only use when the user asks for the full history).',
+      '(can be very large — only use when the user asks for the full history). ' +
+      'Assistant headings include per-turn token usage when the source agent records it.',
     inputSchema: {
       type: 'object',
       properties: {

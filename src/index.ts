@@ -14,6 +14,7 @@ export type {
   Role,
   SessionMeta,
   Turn,
+  TokenUsage,
 } from './types'
 
 export {
@@ -43,6 +44,7 @@ export { lingmaAdapter } from './adapters/lingma'
 export { traeAdapter } from './adapters/trae'
 export { kiroAdapter } from './adapters/kiro'
 export { dshAdapter } from './adapters/dsh'
+export { normalizeUsage, mergeUsage, usageText, usageTitle, creditUsage } from './adapters/usage'
 export { makeCustomAdapter } from './adapters/generic'
 
 export {

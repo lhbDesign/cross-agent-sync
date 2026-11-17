@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionMeta, Turn } from '../types'
 import { HOME, cleanUserText, gitRoot, isDir, isInjected, plain, projectName, readJsonl, readJsonlTail, statOf } from '../util'
+import { normalizeUsage, mergeUsage } from './usage'
 
 /**
  * WorkBuddy（腾讯）：~/.workbuddy/projects/<slug>/<session-id>.jsonl
@@ -44,7 +45,7 @@ function textOf(content: unknown): { text: string; images: ImagePart[] } {
 
 function stampOf(file: string): string | null {
   const st = statOf(file)
-  return st ? `${st.mtimeMs}:${st.size}` : null
+  return st ? `usage-v1:${st.mtimeMs}:${st.size}` : null
 }
 
 function sessionIdOf(file: string, rows: Record<string, any>[]): string {
@@ -89,6 +90,7 @@ function parseFile(file: string): { meta: SessionMeta; rows: Record<string, any>
   let lastUser: string | null = null
   let turns = 0
   let bubbles = 0
+  let usage: Turn['usage']
   for (const rec of readJsonl(file)) {
     rows.push(rec)
     if (!cwd && typeof rec.cwd === 'string') cwd = rec.cwd
@@ -111,6 +113,7 @@ function parseFile(file: string): { meta: SessionMeta; rows: Record<string, any>
         const m = rec.model || rec.modelInfo?.display_model_name || rec.modelInfo?.displayModelName
         if (typeof m === 'string') model = m
       }
+      if (rec.role === 'assistant') usage = mergeUsage([usage, normalizeUsage(rec)])
     }
     if (rec.type === 'function_call' && !model) {
       const m = rec.model || rec.modelInfo?.display_model_name
@@ -142,6 +145,7 @@ function parseFile(file: string): { meta: SessionMeta; rows: Record<string, any>
       branch: null,
       source: file,
       size: st ? st.size : 0,
+      usage,
       extra: { customTitle, aiTitle: title, variant: 'jsonl' },
     },
   }
@@ -179,6 +183,7 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
         text,
         at: rec.timestamp ? Date.parse(String(rec.timestamp)) || undefined : undefined,
         images: images.length ? images : undefined,
+        usage: rec.role === 'assistant' ? normalizeUsage(rec) : undefined,
       })
     } else if (rec.type === 'function_call') {
       const name = typeof rec.name === 'string' ? rec.name : 'tool'

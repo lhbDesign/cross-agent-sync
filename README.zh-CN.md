@@ -21,6 +21,7 @@
 | 列出**所有 agent** 在**当前仓库**的会话 | `ass` · `ass list` · `session_list` |
 | 跨仓库浏览、按 agent 过滤、看会话规模 | `ass list --all` / `--agent codex` |
 | 看某个会话的完整对话 | `ass show #1 --full` · `session_read` |
+| **看每轮对话的 token 用量**（有记录时） | `ass show <引用>`（助手消息后显示）；`ass` / `ass list` 的 `agent:id` 后显示会话累计 |
 | **把上一次的提问原样搬过来**（含图片落盘） | `ass last #1` · `session_last` |
 | 连问多轮一起搬 | `ass last #1 --rounds 3` |
 | **生成交接摘要**（目标 / 时间线 / 文件 / 结论 / 待办） | `ass brief #1` · `session_handoff` |
@@ -409,6 +410,11 @@ ass resume 支付重构 --save
 | 通义灵码 | `~/.lingma/cache/db/local.db` | SQLite | — | **部分支持**：只读明文提问 + 助手摘要，完整 answer 加密 |
 | Continue（可接入） | `~/.continue/sessions/*.json` | JSON | — | |
 | Gemini CLI（可接入） | `~/.gemini/tmp/<hash>/chats/*.json` | JSON | — | |
+
+> **token 用量**：`ass` / `ass list` 会在每个 `agent:id` 后显示会话累计（`↑输入 ↓输出`）；
+> `ass show` 在每条 assistant 消息后显示单轮用量，`--full` 还会显示会话累计。
+> Claude Code / Codex / OpenCode / DSH 有逐条 token；Kiro 记的是 credit；Cursor 只有上下文百分比；
+> Trae / 通义灵码当前日志没有可用的 token 记录。没有记录就不显示，不编造 0。
 
 > **这几家的边界要说清**：
 > - **Trae**：workspaceState 里有明文 `memento/icube-ai-agent-storage` 时能读完整会话；

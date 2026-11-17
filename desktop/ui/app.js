@@ -44,6 +44,58 @@ function humanSize(n) {
   return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`
 }
 
+// ── token / credit 用量展示（字段来自 CLI 的 show --json）
+function usageNum(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return '?'
+  if (v > 0 && v < 1) return v.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`
+  if (v >= 1000) return `${(v / 1000).toFixed(1)}k`
+  return String(Math.round(v))
+}
+
+function usageText(u) {
+  if (!u) return ''
+  if (u.unit === 'credit') {
+    const v = u.cost ?? u.total ?? u.input
+    return v === undefined ? '' : `${usageNum(v)} credit`
+  }
+  const bits = []
+  if (u.input !== undefined) bits.push(`↑${usageNum(u.input)}`)
+  if (u.output !== undefined) bits.push(`↓${usageNum(u.output)}`)
+  if (!bits.length && u.total !== undefined) bits.push(`Σ${usageNum(u.total)}`)
+  return bits.join(' ')
+}
+
+function usageTitle(u) {
+  if (!u) return ''
+  if (u.unit === 'credit') {
+    const v = u.cost ?? u.total ?? u.input
+    return v === undefined ? '' : `${v} credit`
+  }
+  const bits = []
+  if (u.input !== undefined) bits.push(`输入 ${u.input}`)
+  if (u.output !== undefined) bits.push(`输出 ${u.output}`)
+  if (u.cacheRead) bits.push(`缓存读 ${u.cacheRead}`)
+  if (u.cacheWrite) bits.push(`缓存写 ${u.cacheWrite}`)
+  if (u.reasoning) bits.push(`推理 ${u.reasoning}`)
+  if (u.total !== undefined) bits.push(`总计 ${u.total}`)
+  return bits.join(' · ')
+}
+
+function sumUsage(list) {
+  const out = { unit: 'token' }
+  let any = false
+  for (const u of list) {
+    if (!u) continue
+    any = true
+    for (const k of ['input', 'output', 'total', 'cacheRead', 'cacheWrite', 'reasoning', 'cost']) {
+      if (typeof u[k] === 'number') out[k] = (out[k] || 0) + u[k]
+    }
+    if (u.unit === 'credit') out.unit = 'credit'
+  }
+  return any ? out : null
+}
+
 function fmtTime(t) {
   if (!t) return '—'
   const d = new Date(t)
@@ -772,7 +824,13 @@ function renderDrawerTurnList() {
       all: `用户 ${counts.user} 条 + 智能体 ${counts.assistant} 条 · 智能体仅结论`,
       assistant: `智能体回答 ${counts.assistant} 条 · ${summary ? '摘要' : '结论全文'}（已隐藏思考/工具过程）`,
     }[drawerState.mode]
-    note.innerHTML = q ? `${esc(baseText)} · 匹配 ${matched.length} / ${base.length}` : esc(baseText)
+    const totalUsage = sumUsage(drawerState.turns.map((t) => t.usage))
+    const usageNote = totalUsage
+      ? totalUsage.unit === 'credit'
+        ? ` · 用量 ${usageText(totalUsage)}`
+        : ` · Token ${usageText(totalUsage)}`
+      : ''
+    note.innerHTML = (q ? `${esc(baseText)} · 匹配 ${matched.length} / ${base.length}` : esc(baseText)) + esc(usageNote)
   }
 
   const ids = assistantIds().filter((id) => {
@@ -796,9 +854,10 @@ function renderDrawerTurnList() {
     const body = collapsed ? firstLines(sourceText, 2) : sourceText
     const imgs = t.images ? `<div class="turn-img">附件：${t.images} 张图片</div>` : ''
     const files = (t.files || []).map((f) => `<div class="turn-img">文件：${esc(f)}</div>`).join('')
+    const usage = usageText(t.usage)
     return `<div class="turn ${isUser ? 'user' : 'assistant'}${collapsed ? ' collapsed' : ''}">
       <div class="turn-head">
-        <div class="turn-role">${isUser ? '用户' : '智能体'} · ${esc(fmtTime(t.at))}</div>
+        <div class="turn-role">${isUser ? '用户' : '智能体'} · ${esc(fmtTime(t.at))}${usage ? ` <span class="turn-usage" title="${esc(usageTitle(t.usage))}">${esc(usage)}</span>` : ''}</div>
         ${canCollapse ? `<button class="btn small turn-toggle" data-toggle-turn="${esc(t._id)}">${collapsed ? '展开' : '折叠'}</button>` : ''}
       </div>
       <div class="turn-text${summary ? ' turn-summary' : ''}">${highlightText(body || '（无文字内容）', q)}</div>

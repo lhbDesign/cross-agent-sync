@@ -16,6 +16,20 @@ export interface FilePart {
 
 export type Role = 'user' | 'assistant' | 'tool' | 'system'
 
+/** 一轮对话可读到的用量。字段缺省表示该 agent 没记录。 */
+export interface TokenUsage {
+  input?: number
+  output?: number
+  /** provider 给的总量（可能含缓存/推理） */
+  total?: number
+  cacheRead?: number
+  cacheWrite?: number
+  reasoning?: number
+  /** 有些 provider 记的是费用/credit，不是 token */
+  cost?: number
+  unit?: 'token' | 'credit'
+}
+
 /** 统一后的“一轮对话”单元 */
 export interface Turn {
   role: Role
@@ -23,6 +37,8 @@ export interface Turn {
   at?: number
   images?: ImagePart[]
   files?: FilePart[]
+  /** 这一轮对应的模型用量（通常是 assistant 消息上才有） */
+  usage?: TokenUsage
 }
 
 /** 统一后的会话元数据（所有 adapter 的输出形状） */
@@ -53,6 +69,8 @@ export interface SessionMeta {
   size: number
   /** agent 专属字段，供 `show` 输出 */
   extra?: Record<string, unknown>
+  /** 本会话累计用量（能从日志算出来时才有） */
+  usage?: TokenUsage
 }
 
 export interface ListOptions {

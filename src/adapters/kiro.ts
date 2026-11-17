@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionMeta, Turn } from '../types'
 import { HOME, cleanUserText, gitRoot, isDir, isInjected, plain, projectName, statOf } from '../util'
+import { creditUsage } from './usage'
 
 /**
  * Kiro（AWS）有两代会话存储：
@@ -148,10 +149,18 @@ function parseNew(dir: string): { meta: SessionMeta; messages: any[] } | null {
   let lastUser = ''
   let turns = 0
   let bubbles = 0
+  let credit = 0
   let firstAt: number | null = null
   let lastAt: number | null = null
   for (const r of messages) {
     const p = r?.payload
+    if (p?.type === 'usage_summary') {
+      for (const s of Array.isArray(p.promptTurnSummaries) ? p.promptTurnSummaries : []) {
+        if (s?.unit === 'credit' && typeof s.usage === 'number') credit += s.usage
+      }
+      if (!Array.isArray(p.promptTurnSummaries) && typeof p.usage === 'number') credit += p.usage
+      continue
+    }
     if (!p || (p.type !== 'user' && p.type !== 'assistant')) continue
     const text = textOf(p.content).trim()
     // Kiro 的 Reasoning 占位不是最终回答（常见内容就是 "..."）
@@ -191,6 +200,7 @@ function parseNew(dir: string): { meta: SessionMeta; messages: any[] } | null {
       branch: null,
       source: msgFile,
       size: st ? st.size : 0,
+      usage: creditUsage(credit),
       extra: { variant: 'session', dir },
     },
   }
@@ -278,7 +288,7 @@ function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
     const st = statOf(msgFile)
     const sm = statOf(metaFile)
     if (!st || !sm) continue
-    const stamp = `${st.mtimeMs}:${st.size}:${sm.mtimeMs}:${sm.size}`
+    const stamp = `usage-v1:${st.mtimeMs}:${st.size}:${sm.mtimeMs}:${sm.size}`
     const hit = prev[msgFile]
     const meta = hit && hit.stamp === stamp ? hit.meta : parseNew(dir)?.meta
     if (!meta) continue
@@ -295,7 +305,7 @@ function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
     const file = path.join(AGENT_ROOT, f)
     const st = statOf(file)
     if (!st) continue
-    const stamp = `${st.mtimeMs}:${st.size}`
+    const stamp = `usage-v1:${st.mtimeMs}:${st.size}`
     const hit = prev[file]
     const meta = hit && hit.stamp === stamp ? hit.meta : parseOld(file, index)
     if (!meta) continue
@@ -311,9 +321,21 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
   if (meta.extra?.variant === 'session') {
     const dir = String(meta.extra.dir || path.dirname(meta.source))
     const messages = readMessages(path.join(dir, 'messages.jsonl'))
+    const creditByExec = new Map<string, number>()
+    const assistantAt: { index: number; exec?: string }[] = []
     for (const r of messages) {
       const p = r?.payload
-      if (!p || (p.type !== 'user' && p.type !== 'assistant')) continue
+      if (!p) continue
+      if (p.type === 'usage_summary') {
+        let sum = 0
+        for (const s of Array.isArray(p.promptTurnSummaries) ? p.promptTurnSummaries : []) {
+          if (s?.unit === 'credit' && typeof s.usage === 'number') sum += s.usage
+        }
+        if (!sum && typeof p.usage === 'number') sum = p.usage
+        if (sum > 0 && typeof p.executionId === 'string') creditByExec.set(p.executionId, sum)
+        continue
+      }
+      if (p.type !== 'user' && p.type !== 'assistant') continue
       const text = textOf(p.content).trim()
       if (p.type === 'assistant' && (p.operationType === 'Reasoning' || text === '...')) continue
       const images = p.type === 'user' ? imageParts(p.images) : []
@@ -325,6 +347,12 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
         at: toMs(r.timestamp) || undefined,
         images: images.length ? images : undefined,
       })
+      if (p.type === 'assistant') assistantAt.push({ index: turns.length - 1, exec: typeof p.executionId === 'string' ? p.executionId : undefined })
+    }
+    for (const a of assistantAt) {
+      if (!a.exec) continue
+      const credit = creditByExec.get(a.exec)
+      if (credit) turns[a.index] = { ...turns[a.index], usage: creditUsage(credit) }
     }
   } else {
     const j = readJson(meta.source)

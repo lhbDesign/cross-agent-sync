@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [1.3.3] — 2026-11-17
+
+### 新增
+
+- **每轮对话的 token 用量**：`ass` / `ass list` 在每个 `agent:id` 后显示**会话累计**；
+  `ass show` 在每条 assistant 消息后显示 `↑输入 ↓输出`；`ass show --full` 额外显示会话累计；
+  MCP `session_list` 的候选行、`session_read` 的 Markdown 标题也带用量；
+  桌面端会话抽屉每条回答旁显示用量，顶部显示会话累计。
+  - 有逐条 token 记录：Claude Code、Codex、OpenCode、DeepSeek Harness；
+  - Kiro 只有 credit（`usage_summary`），显示为 `x credit`；
+  - Cursor 的 bubble 只有 `tokenCount`（实测大量为 0）和上下文百分比，暂不显示逐条 token；
+  - Trae / 通义灵码当前日志没有可用的 token 记录，不编造 0；
+  - CodeBuddy / WorkBuddy / Qoder 按各自消息里的 `usage` / `tokens` 尽力读取。
+- 新增 `TokenUsage` 统一结构（input/output/total/cacheRead/cacheWrite/reasoning/cost/unit），
+  以及 Claude / Codex / OpenCode / DSH / Cursor / Kiro / WorkBuddy / Qoder 的字段适配。
+
 ## [1.3.2] — 2026-11-13
 
 ### 桌面端

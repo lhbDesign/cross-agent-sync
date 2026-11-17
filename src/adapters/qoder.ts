@@ -3,6 +3,7 @@ import type { Adapter, AdapterCtx, ListOptions, ReadOptions, SessionMeta, Turn }
 import { HOME, exists, gitRoot, isDir, plain, projectName, statOf } from '../util'
 import { openSqlite, lit } from '../sqlite'
 import { makeClaudeFamilyAdapter } from './claude'
+import { normalizeUsage } from './usage'
 
 /**
  * Qoder（阿里）：
@@ -164,6 +165,7 @@ function readDb(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
         role,
         text,
         at: toMs(m.timestamp) || toMs(row.created_at) || undefined,
+        usage: role === 'assistant' ? normalizeUsage(m) : undefined,
       })
     }
     return opts.tail ? turns.slice(-opts.tail) : turns

@@ -96,7 +96,8 @@ fs.writeFileSync(path.join(kiSessionDir, 'session.json'), JSON.stringify({
 jsonl(path.join(kiSessionDir, 'messages.jsonl'), [
   { id: 'm1', timestamp: '2026-11-04T10:00:00Z', payload: { type: 'user', content: 'Kiro 新会话提问' } },
   { id: 'm2', timestamp: '2026-11-04T10:00:01Z', payload: { type: 'assistant', content: '...', operationType: 'Reasoning' } },
-  { id: 'm3', timestamp: '2026-11-04T10:00:02Z', payload: { type: 'assistant', content: 'Kiro 新会话回答', operationType: 'Say' } },
+  { id: 'm3', timestamp: '2026-11-04T10:00:02Z', payload: { type: 'assistant', content: 'Kiro 新会话回答', operationType: 'Say', executionId: 'exec-1' } },
+  { id: 'm4', timestamp: '2026-11-04T10:00:03Z', payload: { type: 'usage_summary', promptTurnSummaries: [{ unit: 'credit', usage: 0.25 }], executionId: 'exec-1', status: 'success' } },
 ])
 const kiOldFile = path.join(kiOldRoot, 'kiro-old-1.json')
 fs.writeFileSync(kiOldFile, JSON.stringify({
@@ -120,7 +121,7 @@ jsonl(dshFile, [
   { type: 'user/message', data: { id: 'u1', role: 'user', content: [{ type: 'text', text: 'DSH 提问' }], source: { kind: 'user' } }, seq: 1, time: 1762600000001 },
   { type: 'user/message', data: { id: 'u0', role: 'user', content: [{ type: 'text', text: '合成上下文' }], source: { kind: 'context' } }, seq: 2, time: 1762600000002 },
   { type: 'session/title', data: { title: 'DSH 标题' }, seq: 3, time: 1762600000003 },
-  { type: 'assistant/message', data: { turn: 1, step: 1, message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'DSH 回答' }], source: { kind: 'model', provider: 'deepseek', model: 'deepseek-chat' } } }, seq: 4, time: 1762600000004 },
+  { type: 'assistant/message', data: { turn: 1, step: 1, message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'DSH 回答' }], source: { kind: 'model', provider: 'deepseek', model: 'deepseek-chat' } }, usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } }, seq: 4, time: 1762600000004 },
   { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } }, seq: 5, time: 1762600000005 },
 ])
 
@@ -266,6 +267,10 @@ test('Kiro：新 sessions 会话与旧 kiroagent 会话', () => {
   assert.ok(old)
   assert.equal(old.title, 'Kiro 旧会话标题')
   assert.deepEqual(one('kiro:kiro-old-1').map((t) => t.text), ['Kiro 旧提问', 'Kiro 旧回答'])
+
+  const kiroTurns = one('kiro:sess_kiro-new')
+  assert.equal(kiroTurns[1].usage?.unit, 'credit')
+  assert.equal(kiroTurns[1].usage?.cost, 0.25)
 })
 
 test('DeepSeek Harness：JSONL 会话与合成消息过滤', () => {
@@ -278,6 +283,8 @@ test('DeepSeek Harness：JSONL 会话与合成消息过滤', () => {
     ['user', 'DSH 提问'],
     ['assistant', 'DSH 回答'],
   ], 'source.kind 不是 user 的合成上下文不能算用户输入')
+  assert.equal(one('dsh:sess-dsh-1')[1].usage?.input, 100)
+  assert.equal(one('dsh:sess-dsh-1')[1].usage?.output, 20)
 })
 
 test('所有新数据源都进入只读保护区，读取不修改源文件', { skip: !hasSqlite && '本机没有 sqlite3' }, () => {

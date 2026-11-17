@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import * as zlib from 'node:zlib'
 import type { Adapter, AdapterCtx, ListOptions, ReadOptions, SessionMeta, Turn } from '../types'
 import { HOME, cleanUserText, gitRoot, isDir, isInjected, plain, projectName, statOf } from '../util'
+import { normalizeUsage, mergeUsage } from './usage'
 
 /**
  * DeepSeek Harness（DSH）：
@@ -183,6 +184,7 @@ function parseMeta(file: string, parsed: Parsed): SessionMeta {
   let bubbles = 0
   let assistantTexts = 0
   let model: string | null = null
+  let usage: Turn['usage']
   let firstAt: number | null = null
   let lastAt: number | null = null
   for (const ev of events) {
@@ -215,6 +217,7 @@ function parseMeta(file: string, parsed: Parsed): SessionMeta {
       if (!text && !tools.length) continue
       assistantTexts++
       bubbles++
+      usage = mergeUsage([usage, normalizeUsage(data?.usage)])
       if (!model && typeof msg?.source?.model === 'string') model = msg.source.model
     }
   }
@@ -239,6 +242,7 @@ function parseMeta(file: string, parsed: Parsed): SessionMeta {
     branch: null,
     source: file,
     size: st ? st.size : 0,
+    usage,
     extra: { variant: 'jsonl', compressed: file.endsWith('.zstd'), partial: assistantTexts === 0 },
   }
 }
@@ -260,7 +264,7 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
       const msg = data?.message
       const parts = [textOf(msg?.content).trim(), ...toolTextOf(msg?.content)].filter(Boolean)
       const text = parts.join('\n')
-      if (text) turns.push({ role: 'assistant', text, at })
+      if (text) turns.push({ role: 'assistant', text, at, usage: normalizeUsage(data?.usage) })
     }
   }
   return opts.tail ? turns.slice(-opts.tail) : turns
@@ -305,7 +309,7 @@ function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
   for (const { file, version } of sessionFiles()) {
     const st = statOf(file)
     if (!st) continue
-    const stamp = `${st.mtimeMs}:${st.size}:v${version}`
+    const stamp = `usage-v1:${st.mtimeMs}:${st.size}:v${version}`
     const hit = prev[file]
     let meta: SessionMeta | null = hit && hit.stamp === stamp ? hit.meta : null
     if (!meta) {

@@ -3,7 +3,8 @@ import path from 'node:path'
 import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionMeta, Turn } from '../types'
 import { lit, openSqlite } from '../sqlite'
 import { sessionTitle } from './title'
-import { HOME, cleanUserText, exists, gitRoot, isDir, isInjected, parseDataUrl, plain, projectName, readJsonl, readJsonlTail, statOf } from '../util'
+import { normalizeUsage, mergeUsage } from './usage'
+import { HOME, cleanUserText, exists, gitRoot, isInjected, parseDataUrl, plain, projectName, readJsonl, readJsonlTail, statOf } from '../util'
 
 /**
  * Codex CLI / Codex app：~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl（+ archived_sessions/）
@@ -126,6 +127,9 @@ function parseFile(file: string): SessionMeta {
   let lastUser: string | null = null
   let turns = 0
   let bubbles = 0
+  let currentTurnId: string | undefined
+  const usageByTurn = new Map<string, Turn['usage']>()
+  const fallbackByTurn = new Map<string, Turn['usage']>()
   let messageOrdinal = 0
   let prior: { role: 'user' | 'assistant'; text: string; source: string; at: number | null; ordinal: number } | null = null
   const noteMessage = (role: 'user' | 'assistant', text: string, source: string, at: number | null): void => {
@@ -149,6 +153,16 @@ function parseFile(file: string): SessionMeta {
     const p: Record<string, any> = rec.payload || {}
     if (!meta && rec.type === 'session_meta') meta = p
     if (!model && rec.type === 'turn_context') model = p.model || p.model_info?.id || null
+    if (rec.type === 'turn_context') {
+      currentTurnId = typeof p.turn_id === 'string' ? p.turn_id : typeof p.root_turn_id === 'string' ? p.root_turn_id : undefined
+    } else if (rec.type === 'token_usage_record') {
+      const id = typeof p.turn_id === 'string' ? p.turn_id : typeof p.root_turn_id === 'string' ? p.root_turn_id : currentTurnId
+      const usage = normalizeUsage(p.turn_token_usage || p.usage)
+      if (id && usage) usageByTurn.set(id, p.turn_token_usage ? usage : mergeUsage([usageByTurn.get(id), usage]))
+    } else if (rec.type === 'event_msg' && p.type === 'token_count' && currentTurnId) {
+      const usage = normalizeUsage(p.info?.last_token_usage ?? p.info?.total_token_usage)
+      if (usage) fallbackByTurn.set(currentTurnId, mergeUsage([fallbackByTurn.get(currentTurnId), usage]))
+    }
     const at = rec.timestamp ? Date.parse(String(rec.timestamp)) || null : null
     if (rec.type === 'event_msg' && p.type === 'user_message') {
       noteMessage('user', String(p.message || ''), 'event_msg', at)
@@ -168,6 +182,8 @@ function parseFile(file: string): SessionMeta {
   const cwd = (meta?.cwd as string) || null
   const st = statOf(file)
   const repo = cwd ? gitRoot(cwd) : null
+  const allUsage = new Map(usageByTurn)
+  for (const [id, u] of fallbackByTurn) if (!allUsage.has(id)) allUsage.set(id, u)
   return {
     key: `codex:${sessionId}`,
     agent: 'codex',
@@ -186,6 +202,7 @@ function parseFile(file: string): SessionMeta {
     branch: null,
     source: file,
     size: st ? st.size : 0,
+    usage: mergeUsage([...allUsage.values()]),
     extra: { originator: meta?.originator },
   }
 }
@@ -198,7 +215,7 @@ function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
   for (const full of files()) {
     const st = statOf(full)
     if (!st || st.size < 200) continue
-    const stamp = `titles-v1:${st.mtimeMs}:${st.size}`
+    const stamp = `usage-v1:${st.mtimeMs}:${st.size}`
     const hit = prev[full]
     const meta = hit && hit.stamp === stamp ? hit.meta : parseFile(full)
     next[full] = { stamp, meta }
@@ -213,6 +230,10 @@ function list(_opts: ListOptions, ctx: AdapterCtx): SessionMeta[] {
 function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
   const turns: Turn[] = []
   let messageOrdinal = 0
+  let currentTurnId: string | undefined
+  const assistantTurnIds: (string | undefined)[] = []
+  const usageByTurn = new Map<string, Turn['usage']>()
+  const fallbackByTurn = new Map<string, Turn['usage']>()
   let prior: { role: Turn['role']; text: string; source: string; at: number | undefined; ordinal: number; turnIndex: number } | null = null
   const push = (role: Turn['role'], text: string, at: number | undefined, source: string, images?: ImagePart[]) => {
     messageOrdinal++
@@ -223,10 +244,12 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
     const duplicateEncoding = prior?.ordinal === messageOrdinal - 1 && prior.role === role && prior.text === t && prior.source !== source && closeInTime
     if (duplicateEncoding && prior) {
       if (images?.length && !turns[prior.turnIndex]?.images?.length) turns[prior.turnIndex] = { ...turns[prior.turnIndex], images }
+      if (role === 'assistant') assistantTurnIds[prior.turnIndex] = currentTurnId
       prior = { role, text: t, source, at, ordinal: messageOrdinal, turnIndex: prior.turnIndex }
       return
     }
     turns.push({ role, text: t, at, images: images?.length ? images : undefined })
+    if (role === 'assistant') assistantTurnIds[turns.length - 1] = currentTurnId
     prior = { role, text: t, source, at, ordinal: messageOrdinal, turnIndex: turns.length - 1 }
   }
 
@@ -234,9 +257,23 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
   for (const rec of iter) {
     const p: Record<string, any> = rec.payload || {}
     const at = Date.parse(rec.timestamp) || undefined
-    if (rec.type === 'event_msg') {
+    if (rec.type === 'turn_context') {
+      currentTurnId = typeof p.turn_id === 'string' ? p.turn_id : typeof p.root_turn_id === 'string' ? p.root_turn_id : undefined
+    } else if (rec.type === 'token_usage_record') {
+      const id = typeof p.turn_id === 'string' ? p.turn_id : typeof p.root_turn_id === 'string' ? p.root_turn_id : currentTurnId
+      const usage = normalizeUsage(p.turn_token_usage || p.usage)
+      if (id && usage) {
+        // turn_token_usage 是这一 turn 的累计值；只有单次 usage 时按请求累加
+        usageByTurn.set(id, p.turn_token_usage ? usage : mergeUsage([usageByTurn.get(id), usage]))
+      }
+    } else if (rec.type === 'event_msg') {
       if (p.type === 'user_message') push('user', String(p.message || ''), at, 'event_msg')
       else if (p.type === 'agent_message') push('assistant', String(p.message || ''), at, 'event_msg')
+      else if (p.type === 'token_count' && currentTurnId) {
+        // 少数旧日志没有 token_usage_record，只有 token_count
+        const usage = normalizeUsage(p.info?.last_token_usage ?? p.info?.total_token_usage)
+        if (usage) fallbackByTurn.set(currentTurnId, mergeUsage([fallbackByTurn.get(currentTurnId), usage]))
+      }
     } else if (rec.type === 'response_item' && p.type === 'message') {
       const { text, images } = messageParts(p)
       if (p.role === 'user') push('user', text, at, 'response_item', images)
@@ -258,6 +295,24 @@ function read(meta: SessionMeta, opts: ReadOptions = {}): Turn[] {
             ? arg
             : ''
       if (name !== 'shell' || v) turns.push({ role: 'tool', text: `▸ ${name}: ${plain(v, 100)}`, at })
+    }
+  }
+  // token_usage_record 可能出现在 assistant 消息之后：两遍再挂到该 turn 的最后一条 assistant 上
+  for (const [turnId, usage] of usageByTurn) {
+    for (let i = assistantTurnIds.length - 1; i >= 0; i--) {
+      if (assistantTurnIds[i] === turnId) {
+        turns[i] = { ...turns[i], usage }
+        break
+      }
+    }
+  }
+  for (const [turnId, usage] of fallbackByTurn) {
+    if (usageByTurn.has(turnId)) continue
+    for (let i = assistantTurnIds.length - 1; i >= 0; i--) {
+      if (assistantTurnIds[i] === turnId) {
+        turns[i] = { ...turns[i], usage }
+        break
+      }
     }
   }
   const cleaned = turns.filter((t) => t.role !== 'tool' || t.text.length > 4)

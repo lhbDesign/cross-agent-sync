@@ -3,6 +3,7 @@ import path from 'node:path'
 import type { Adapter, AdapterCtx, ImagePart, ListOptions, ReadOptions, SessionMeta, Turn } from '../types'
 import { HOME, cleanUserText, gitRoot, isDir, isInjected, plain, projectName, readJsonFile, readJsonl, readJsonlTail, statOf } from '../util'
 import { sessionTitle } from './title'
+import { normalizeUsage, mergeUsage } from './usage'
 
 /**
  * Claude Code：~/.claude/projects/<cwd-slug>/<uuid>.jsonl
@@ -73,6 +74,7 @@ function parseFile(file: string, opts: ClaudeFamilyOptions): SessionMeta {
   let lastUser: string | null = null
   let turns = 0
   let bubbles = 0
+  let usage: Turn['usage']
 
   for (const rec of readJsonl(file)) {
     if (!cwd && typeof rec.cwd === 'string') cwd = rec.cwd
@@ -93,6 +95,7 @@ function parseFile(file: string, opts: ClaudeFamilyOptions): SessionMeta {
       }
     } else if (rec.type === 'assistant') {
       bubbles++
+      usage = mergeUsage([usage, normalizeUsage(rec.message?.usage)])
     }
   }
 
@@ -116,6 +119,7 @@ function parseFile(file: string, opts: ClaudeFamilyOptions): SessionMeta {
     branch,
     source: file,
     size: st ? st.size : 0,
+    usage,
     extra: { customTitle, aiTitle: title },
   }
 }
@@ -171,7 +175,7 @@ export function makeClaudeFamilyAdapter(opts: ClaudeFamilyOptions): Adapter {
       for (const { file, names } of jsonlFiles(root)) {
         const st = statOf(file)
         if (!st || st.size === 0) continue
-        const stamp = `titles-v1:${st.mtimeMs}:${st.size}`
+        const stamp = `usage-v1:${st.mtimeMs}:${st.size}`
         const hit = prev[file]
         const meta = hit && hit.stamp === stamp ? hit.meta : parseFile(file, opts)
         next[file] = { stamp, meta }
@@ -200,7 +204,7 @@ export function makeClaudeFamilyAdapter(opts: ClaudeFamilyOptions): Adapter {
           else if (b.type === 'tool_use') parts.push(`▸ ${b.name}: ${toolSummary(b.input)}`)
         }
         const text = parts.join('\n').trim()
-        if (text) turns.push({ role: 'assistant', text, at: Date.parse(rec.timestamp) || undefined })
+        if (text) turns.push({ role: 'assistant', text, at: Date.parse(rec.timestamp) || undefined, usage: normalizeUsage(rec.message?.usage) })
       }
     }
     return readOpts.tail ? turns.slice(-readOpts.tail) : turns

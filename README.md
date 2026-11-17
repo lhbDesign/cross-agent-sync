@@ -21,6 +21,7 @@ aligns them by **repository**, then lets you “pick a session → bring the con
 | List sessions from **all agents** in the **current repo** | `ass` · `ass list` · `session_list` |
 | Browse across repos, filter by agent, see session size | `ass list --all` / `--agent codex` |
 | Read a full conversation | `ass show #1 --full` · `session_read` |
+| **See per-turn token usage** (when recorded) | `ass show <ref>` (after assistant messages); `ass` / `ass list` show the session total after `agent:id` |
 | **Port the last question as-is** (images written to disk) | `ass last #1` · `session_last` |
 | Port several recent rounds together | `ass last #1 --rounds 3` |
 | **Build a handoff brief** (goal / timeline / files / conclusions / todos) | `ass brief #1` · `session_handoff` |
@@ -422,6 +423,12 @@ others via `ass detect` + config.
 | Lingma (通义灵码) | `~/.lingma/cache/db/local.db` | SQLite | — | **partial**: plaintext questions + assistant summaries; full answers are encrypted |
 | Continue (pluggable) | `~/.continue/sessions/*.json` | JSON | — | |
 | Gemini CLI (pluggable) | `~/.gemini/tmp/<hash>/chats/*.json` | JSON | — | |
+
+> **Token usage**: `ass` / `ass list` print the session total (`↑input ↓output`) after each `agent:id`;
+> `ass show` prints per-turn usage after each assistant message, and `--full` adds the session total.
+> Claude Code / Codex / OpenCode / DSH record per-turn tokens; Kiro records credits;
+> Cursor only exposes a context percentage; Trae / Lingma have no usable token record in current logs.
+> If an agent does not record it, nothing is shown — zeros are not invented.
 
 > **Limits worth knowing**:
 > - **Trae**: reads full sessions from plaintext `memento/icube-ai-agent-storage` when present;
