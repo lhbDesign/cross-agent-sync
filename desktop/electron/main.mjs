@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runJson, runText } from './cli.mjs'
+import { abortAllCli, runJson, runText } from './cli.mjs'
 import { diskUsage } from './stats.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -255,11 +255,29 @@ ipcMain.handle('ass:brief', async (_e, { repo, ref }) => {
   return runText(['brief', ...(ref ? [ref] : [])], { cwd: repo })
 })
 
-ipcMain.handle('ass:search', async (_e, { q, repo }) => {
-  const args = ['search', q, '--json']
+ipcMain.handle('ass:search', async (e, { q, repo, scan, limit, agent } = {}) => {
+  const args = ['search', q, '--json', '--progress']
   if (repo) args.push('--repo', repo)
   else args.push('--all')
-  return runJson(args, { cwd: repo || process.cwd() })
+  if (agent) args.push('--agent', agent)
+  if (scan) args.push('--scan', String(scan))
+  if (limit) args.push('--limit', String(limit))
+  return runJson(args, {
+    cwd: repo || process.cwd(),
+    onProgress: (p) => {
+      try {
+        e.sender.send('ass:search-progress', p)
+      } catch {
+        /* window closed */
+      }
+    },
+  })
+})
+
+/** 终止正在跑的 CLI 扫描 / 加载 */
+ipcMain.handle('ass:abort', async () => {
+  abortAllCli()
+  return { ok: true }
 })
 
 // ── 写操作（渲染层先弹确认，这里只执行）

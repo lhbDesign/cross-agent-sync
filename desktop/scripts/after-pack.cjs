@@ -16,9 +16,10 @@ function signMac(appOutDir, productFilename) {
   console.log(`[afterPack] ad-hoc signed: ${appPath}`)
 }
 
-function patchWindowsExe(appOutDir, productFilename, version, iconPath) {
-  const ResEdit = require('resedit')
-  const PELib = require('pe-library')
+async function patchWindowsExe(appOutDir, productFilename, version, iconPath) {
+  // resedit / pe-library 是 ESM，CJS 钩子里用动态 import
+  const ResEdit = await import('resedit')
+  const PELib = await import('pe-library')
 
   const exePath = path.join(appOutDir, `${productFilename}.exe`)
   if (!fs.existsSync(exePath)) {
@@ -74,6 +75,11 @@ module.exports = async function afterPack(context) {
   }
 
   if (electronPlatformName === 'win32') {
-    patchWindowsExe(appOutDir, product, packager.appInfo.version, path.join(__dirname, '..', 'assets', 'icon.ico'))
+    await patchWindowsExe(
+      appOutDir,
+      product,
+      packager.appInfo.version,
+      path.join(__dirname, '..', 'assets', 'icon.ico'),
+    )
   }
 }

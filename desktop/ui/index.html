@@ -134,14 +134,42 @@
 
       <!-- 全部项目 -->
       <section class="view" id="view-all">
-        <div class="toolbar">
-          <input id="all-search" class="input narrow" placeholder="搜索项目…" spellcheck="false" />
-          <div class="chips" id="agent-chips"></div>
+        <div class="subtabs" id="all-subtabs">
+          <button type="button" class="subtab active" data-all-mode="projects">按项目名</button>
+          <button type="button" class="subtab" data-all-mode="context">搜上下文</button>
         </div>
-        <div id="repos-grid" class="repo-grid"></div>
-        <div id="repos-empty" class="empty hidden">
-          <div class="empty-ico">⊞</div>
-          <p>还没有扫描到任何项目。</p>
+
+        <div id="all-mode-projects">
+          <div class="toolbar">
+            <input id="all-search" class="input narrow" placeholder="搜索项目名或路径…" spellcheck="false" />
+            <div class="chips" id="agent-chips"></div>
+          </div>
+          <div id="repos-grid" class="repo-grid"></div>
+          <div id="repos-empty" class="empty hidden">
+            <div class="empty-ico">⊞</div>
+            <p>还没有扫描到任何项目。</p>
+          </div>
+        </div>
+
+        <div id="all-mode-context" class="hidden">
+          <div class="toolbar">
+            <input id="ctx-search" class="input narrow" placeholder="搜会话里的用户输入或 AI 回答…" spellcheck="false" />
+            <button type="button" class="btn primary" id="btn-ctx-search">搜索</button>
+            <button type="button" class="btn" id="btn-ctx-abort" disabled>终止</button>
+          </div>
+          <div class="chips" id="ctx-agent-chips"></div>
+          <div id="ctx-progress" class="ctx-progress hidden">
+            <div class="progress-track"><div class="progress-fill" id="ctx-progress-fill"></div></div>
+            <div class="ctx-progress-meta">
+              <span id="ctx-progress-text">准备搜索…</span>
+              <span id="ctx-progress-hits" class="muted"></span>
+            </div>
+          </div>
+          <div id="ctx-results" class="ctx-results"></div>
+          <div id="ctx-empty" class="empty">
+            <div class="empty-ico">⌕</div>
+            <p>输入关键词，在会话正文里找相关讨论。<br />可先选上方 Agent 再搜。</p>
+          </div>
         </div>
       </section>
 
@@ -243,7 +271,12 @@
   </div>
 </div>
 
-<div class="loading hidden" id="loading"><div class="spinner"></div><span id="loading-text">扫描中…</span></div>
+<div class="loading hidden" id="loading">
+  <div class="loading-box">
+    <div class="loading-row"><div class="spinner"></div><span id="loading-text">扫描中…</span></div>
+    <button type="button" class="btn" id="btn-abort">终止</button>
+  </div>
+</div>
 <div class="toast hidden" id="toast"></div>
 
 <script src="app.js"></script>

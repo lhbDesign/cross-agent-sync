@@ -13,6 +13,23 @@ export const RUNTIME_DIR = PACKAGED
   : path.join(here, '..', 'runtime')
 export const CLI_ENTRY = path.join(RUNTIME_DIR, 'cli.js')
 
+/** 正在跑的 CLI 子进程；abortAllCli 用来响应「终止」 */
+const activeChildren = new Map()
+
+/**
+ * 杀掉所有进行中的 CLI 子进程（用户点「终止」时调用）。
+ */
+export function abortAllCli() {
+  for (const [child, meta] of activeChildren) {
+    meta.aborted = true
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /**
  * 以「Electron 当 Node 用」的方式跑仓库自带的 CLI。
  *
@@ -23,6 +40,8 @@ export const CLI_ENTRY = path.join(RUNTIME_DIR, 'cli.js')
  * ASS_REEXEC=1 必须设：否则 bootstrap 在缺 node:sqlite 时可能用 Electron 二进制
  * 再 spawn 自己，行为不可控。
  */
+const PROGRESS_RE = /^ASS_PROGRESS\s+(\{.*\})\s*$/
+
 export function runCli(args, opts = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI_ENTRY, ...args], {
@@ -31,22 +50,59 @@ export function runCli(args, opts = {}) {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
+    const meta = { aborted: false }
+    activeChildren.set(child, meta)
+
     let stdout = ''
     let stderr = ''
+    let stderrBuf = ''
     child.stdout.on('data', (d) => (stdout += d))
-    child.stderr.on('data', (d) => (stderr += d))
+    child.stderr.on('data', (d) => {
+      const chunk = String(d)
+      stderr += chunk
+      if (typeof opts.onProgress !== 'function') return
+      stderrBuf += chunk
+      const lines = stderrBuf.split('\n')
+      stderrBuf = lines.pop() || ''
+      for (const line of lines) {
+        const m = PROGRESS_RE.exec(line.trim())
+        if (!m) continue
+        try {
+          opts.onProgress(JSON.parse(m[1]))
+        } catch {
+          /* ignore bad progress line */
+        }
+      }
+    })
 
     const timer = setTimeout(() => {
-      try { child.kill('SIGKILL') } catch { /* ignore */ }
+      meta.aborted = true
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        /* ignore */
+      }
     }, opts.timeout || 180_000)
 
     child.on('error', (e) => {
       clearTimeout(timer)
-      resolve({ code: -1, stdout, stderr: stderr || String(e?.message || e) })
+      activeChildren.delete(child)
+      resolve({
+        code: -1,
+        stdout,
+        stderr: stderr || String(e?.message || e),
+        aborted: meta.aborted,
+      })
     })
     child.on('close', (code) => {
       clearTimeout(timer)
-      resolve({ code: code ?? -1, stdout, stderr })
+      activeChildren.delete(child)
+      resolve({
+        code: code ?? -1,
+        stdout,
+        stderr,
+        aborted: meta.aborted,
+      })
     })
   })
 }
@@ -82,6 +138,7 @@ function stripNoise(text) {
 
 export async function runJson(args, opts = {}) {
   const r = await runCli(args, opts)
+  if (r.aborted) throw new Error('已终止')
   if (r.code !== 0) {
     const msg = stripNoise(r.stderr || r.stdout || '').trim() || `命令失败：ass ${args.join(' ')}`
     throw new Error(msg)
@@ -96,6 +153,7 @@ export async function runJson(args, opts = {}) {
 /** 只取文本输出（brief / note 这类 Markdown 命令） */
 export async function runText(args, opts = {}) {
   const r = await runCli(args, opts)
+  if (r.aborted) throw new Error('已终止')
   if (r.code !== 0) throw new Error(stripNoise(r.stderr || r.stdout || '').trim() || '命令失败')
   return stripNoise(r.stdout)
 }

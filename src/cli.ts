@@ -1094,13 +1094,21 @@ function cmdTaskDone(args: Args, rest: string[]): void {
 function cmdSearch(args: Args, cfg: Config): void {
   const q = args.positional.join(' ')
   if (!q) return usage('search 需要一个关键词：`ass search "点击穿透"`')
+  const wantProgress = Boolean(args.flags.progress)
   const r = searchSessions(
     q,
     {
       repo: (args.flags.repo as string) || process.cwd(),
       allRepos: Boolean(args.flags.all),
+      agent: typeof args.flags.agent === 'string' ? args.flags.agent : undefined,
       limit: Number(args.flags.limit || 8),
       scan: Number(args.flags.scan || 60),
+      onProgress: wantProgress
+        ? (p) => {
+            // 桌面端从 stderr 解析进度；stdout 仍只输出最终 JSON
+            process.stderr.write(`ASS_PROGRESS ${JSON.stringify(p)}\n`)
+          }
+        : undefined,
     },
     cfg,
   )
@@ -1366,7 +1374,7 @@ ${c.bold('看历史')}
   ass                      当前仓库：上次收尾记录 + 最近会话
   ass list [选项]           列出会话（--all 跨仓库，--agent claude，--limit 20，--json）
   ass show <引用>           看某个会话（--full 全部，--tail 6 最后 N 条）
-  ass search <关键词>       搜索标题、预览和最近会话正文（--all 跨仓库，--scan 60）
+  ass search <关键词>       搜索标题、预览和最近会话正文（--all 跨仓库，--agent，--scan 60，--progress）
 
 ${c.bold('搬上下文')}
   ass inputs <引用>        所有用户输入全文（--round 3 选一条；--raw 纯正文；--out 文件；--json）

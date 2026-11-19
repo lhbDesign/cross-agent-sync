@@ -19,7 +19,16 @@ const state = {
   project: null,
   selectedKey: null,
   repoFilter: '',
+  /** 全部项目页子模式：projects | context */
+  allMode: 'projects',
   agentFilter: null,
+  ctxFilter: '',
+  ctxAgentFilter: null,
+  ctxHits: [],
+  ctxQuery: '',
+  ctxSearching: false,
+  ctxProgress: { scanned: 0, total: 0, hits: 0 },
+  ctxAborted: false,
   aliases: { projects: {}, sessions: {} },
   cleanupAgent: null,
   cleanupSessions: [],
@@ -158,10 +167,29 @@ async function withLoading(text, fn) {
   }
 }
 
+function isAbortError(e) {
+  return /已终止|aborted/i.test(String(e?.message || e || ''))
+}
+
+/** 用户点「终止」：杀掉 CLI 子进程并立刻收起遮罩 */
+async function abortLoading() {
+  try {
+    await api.abort()
+  } catch {
+    /* ignore */
+  }
+  loadingDepth = 0
+  el('loading').classList.add('hidden')
+}
+
 async function guard(fn, errPrefix = '') {
   try {
     return await fn()
   } catch (e) {
+    if (isAbortError(e)) {
+      toast('已终止')
+      return
+    }
     console.error(`[guard] ${errPrefix}${e?.stack || e}`)
     toast(`${errPrefix}${e?.message || e}`, true)
   }
@@ -487,29 +515,253 @@ function renderOverviewCharts() {
 
 // ─────────────────────────────── 全部项目
 
+function repoPathMatches(r, q) {
+  const hay = `${r.repo} ${basename(r.repo)} ${projectLabel(r.repo)}`.toLowerCase()
+  return hay.includes(q)
+}
+
 function repoMatches(r) {
   const q = state.repoFilter.trim().toLowerCase()
-  if (q) {
-    const hay = `${r.repo} ${basename(r.repo)}`.toLowerCase()
-    if (!hay.includes(q)) return false
-  }
+  if (q && !repoPathMatches(r, q)) return false
   if (state.agentFilter && !(r.agents || []).includes(state.agentFilter)) return false
   return true
 }
 
-function renderAll() {
-  // 过滤 chips：只列出实际出现在项目里的 agent
+function agentChipData() {
   const present = new Set(state.repos.flatMap((r) => r.agents || []))
-  const chipData = [
+  return [
     { id: null, label: '全部' },
     ...[...present].sort().map((id) => ({ id, label: state.agents.find((a) => a.id === id)?.label || id })),
   ]
-  el('agent-chips').innerHTML = chipData
+}
+
+function renderAgentChips(hostId, activeId) {
+  const host = el(hostId)
+  if (!host) return
+  host.innerHTML = agentChipData()
     .map(
       (c) =>
-        `<button class="chip${state.agentFilter === c.id ? ' active' : ''}" data-agent="${c.id === null ? '' : esc(c.id)}">${esc(c.label)}</button>`,
+        `<button type="button" class="chip${activeId === c.id ? ' active' : ''}" data-agent="${c.id === null ? '' : esc(c.id)}">${esc(c.label)}</button>`,
     )
     .join('')
+}
+
+function setAllMode(mode) {
+  state.allMode = mode === 'context' ? 'context' : 'projects'
+  $$('#all-subtabs .subtab').forEach((b) => b.classList.toggle('active', b.dataset.allMode === state.allMode))
+  el('all-mode-projects')?.classList.toggle('hidden', state.allMode !== 'projects')
+  el('all-mode-context')?.classList.toggle('hidden', state.allMode !== 'context')
+  if (state.allMode === 'projects') renderAll()
+  else {
+    renderAgentChips('ctx-agent-chips', state.ctxAgentFilter)
+    renderContextResults()
+  }
+}
+
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function highlightText(text, q) {
+  const raw = String(text ?? '')
+  if (!q) return esc(raw)
+  const re = new RegExp(`(${escapeRegExp(q)})`, 'ig')
+  return esc(raw).replace(re, '<mark>$1</mark>')
+}
+
+function parseSnippet(raw) {
+  const s = String(raw || '')
+  if (s.startsWith('🏷️') || s.includes('标题：')) {
+    return { role: '标题', text: s.replace(/^🏷️\s*/, '').replace(/^标题：/, '') }
+  }
+  if (s.startsWith('📝') || s.includes('最近消息：')) {
+    return { role: '预览', text: s.replace(/^📝\s*/, '').replace(/^最近消息：/, '') }
+  }
+  if (s.startsWith('🧑')) return { role: '用户', text: s.replace(/^🧑\s*/, '') }
+  if (s.startsWith('🤖')) return { role: 'AI', text: s.replace(/^🤖\s*/, '') }
+  return { role: '匹配', text: s }
+}
+
+function setCtxProgress(p) {
+  state.ctxProgress = {
+    scanned: Number(p?.scanned) || 0,
+    total: Number(p?.total) || 0,
+    hits: Number(p?.hits) || 0,
+  }
+  const box = el('ctx-progress')
+  const fill = el('ctx-progress-fill')
+  const text = el('ctx-progress-text')
+  const hits = el('ctx-progress-hits')
+  if (!box || !fill || !text) return
+  box.classList.remove('hidden')
+  const { scanned, total } = state.ctxProgress
+  const pct = total > 0 ? Math.min(100, Math.round((scanned / total) * 100)) : state.ctxSearching ? 8 : 0
+  fill.style.width = `${pct}%`
+  text.textContent = state.ctxSearching
+    ? total > 0
+      ? `扫描中 ${scanned} / ${total}（${pct}%）`
+      : '正在列出会话…'
+    : state.ctxAborted
+      ? `已终止 · 已扫 ${scanned}${total ? ` / ${total}` : ''}`
+      : total > 0
+        ? `完成 · 扫了 ${scanned} / ${total}`
+        : '搜索完成'
+  if (hits) hits.textContent = `命中 ${state.ctxProgress.hits} 个会话`
+}
+
+function setCtxSearching(on) {
+  state.ctxSearching = on
+  const go = el('btn-ctx-search')
+  const stop = el('btn-ctx-abort')
+  if (go) go.disabled = on
+  if (stop) stop.disabled = !on
+}
+
+let unsubSearchProgress = null
+let ctxSearchSeq = 0
+
+async function runContextSearch() {
+  const query = String(el('ctx-search')?.value || state.ctxFilter || '').trim()
+  state.ctxFilter = query
+  if (!query) return toast('先输入要搜的关键词', true)
+  if (query.length < 2) return toast('关键词至少 2 个字符', true)
+
+  const seq = ++ctxSearchSeq
+  state.ctxAborted = false
+  state.ctxHits = []
+  state.ctxQuery = query
+  setCtxSearching(true)
+  setCtxProgress({ scanned: 0, total: 0, hits: 0 })
+  renderContextResults()
+
+  if (typeof unsubSearchProgress === 'function') unsubSearchProgress()
+  unsubSearchProgress = api.onSearchProgress?.((p) => {
+    if (seq !== ctxSearchSeq) return
+    setCtxProgress(p)
+  })
+
+  try {
+    const result = await api.search(query, {
+      scan: 800,
+      limit: 200,
+      agent: state.ctxAgentFilter || undefined,
+    })
+    if (seq !== ctxSearchSeq) return
+    state.ctxHits = result?.hits || []
+    setCtxProgress({
+      scanned: result?.scanned ?? state.ctxProgress.scanned,
+      total: result?.total ?? state.ctxProgress.total,
+      hits: state.ctxHits.length,
+    })
+    renderContextResults()
+    if (!state.ctxHits.length) toast(`未找到包含「${query}」的会话`)
+  } catch (e) {
+    if (seq !== ctxSearchSeq) return
+    if (isAbortError(e)) {
+      state.ctxAborted = true
+      setCtxProgress(state.ctxProgress)
+      toast('已终止搜索')
+      return
+    }
+    throw e
+  } finally {
+    if (seq === ctxSearchSeq) {
+      setCtxSearching(false)
+      if (typeof unsubSearchProgress === 'function') {
+        unsubSearchProgress()
+        unsubSearchProgress = null
+      }
+      renderContextResults()
+    }
+  }
+}
+
+async function abortContextSearch() {
+  state.ctxAborted = true
+  ++ctxSearchSeq
+  try {
+    await api.abort()
+  } catch {
+    /* ignore */
+  }
+  setCtxSearching(false)
+  setCtxProgress(state.ctxProgress)
+  toast('已终止搜索')
+}
+
+function groupContextHits(hits) {
+  const groups = new Map()
+  for (const hit of hits || []) {
+    const repo = hit?.meta?.repo || hit?.meta?.cwd || '(未知项目)'
+    if (!groups.has(repo)) groups.set(repo, [])
+    groups.get(repo).push(hit)
+  }
+  return [...groups.entries()]
+}
+
+function renderContextResults() {
+  renderAgentChips('ctx-agent-chips', state.ctxAgentFilter)
+  const host = el('ctx-results')
+  const empty = el('ctx-empty')
+  if (!host || !empty) return
+
+  const hits = state.ctxHits || []
+  const q = state.ctxQuery
+  if (!hits.length) {
+    host.innerHTML = ''
+    empty.classList.remove('hidden')
+    if (state.ctxSearching) {
+      empty.innerHTML = `<div class="empty-ico">⌕</div><p>正在搜索「${esc(q)}」…</p>`
+    } else if (state.ctxAborted && q) {
+      empty.innerHTML = `<div class="empty-ico">⌫</div><p>搜索已终止。可改关键词或缩小 Agent 范围后再试。</p>`
+    } else if (q) {
+      empty.innerHTML = `<div class="empty-ico">⌀</div><p>没有找到包含「${esc(q)}」的会话。</p>`
+    } else {
+      empty.innerHTML = `<div class="empty-ico">⌕</div><p>输入关键词，在会话正文里找相关讨论。<br />可先选上方 Agent 再搜。</p>`
+    }
+    return
+  }
+
+  empty.classList.add('hidden')
+  const groups = groupContextHits(hits)
+  host.innerHTML = groups
+    .map(([repo, list]) => {
+      const title = repo === '(未知项目)' ? repo : projectLabel(repo)
+      return `<div class="ctx-group">
+        <div class="ctx-group-head">
+          <h3 class="ctx-group-title">${esc(title)} <span class="muted" style="font-weight:500;font-size:12px">${list.length} 个会话</span></h3>
+          <div class="ctx-group-path" title="${esc(repo)}">${esc(repo)}</div>
+        </div>
+        ${list
+          .map((hit) => {
+            const m = hit.meta || {}
+            const snips = (hit.snippets || []).map(parseSnippet)
+            return `<div class="ctx-session" data-ctx-repo="${esc(m.repo || '')}" data-ctx-key="${esc(m.key || '')}">
+              <div class="ctx-session-top">
+                <span class="badge">${esc(m.agentLabel || m.agent || '?')}</span>
+                <span class="ctx-session-title">${highlightText(m.title || m.key || '未命名会话', q)}</span>
+                <span class="ctx-session-meta">${esc(fmtTime(m.updatedAt))} · ${num(m.turns)} 轮</span>
+              </div>
+              <div class="ctx-snips">
+                ${snips
+                  .map(
+                    (s) => `<div class="ctx-snip">
+                      <div class="ctx-snip-role">${esc(s.role)}</div>
+                      <div class="ctx-snip-text">${highlightText(s.text, q)}</div>
+                    </div>`,
+                  )
+                  .join('')}
+              </div>
+            </div>`
+          })
+          .join('')}
+      </div>`
+    })
+    .join('')
+}
+
+function renderAll() {
+  renderAgentChips('agent-chips', state.agentFilter)
 
   const list = state.repos.filter(repoMatches)
   el('repos-empty').classList.toggle('hidden', list.length > 0)
@@ -530,6 +782,11 @@ function renderAll() {
       </div>`,
     )
     .join('')
+
+  if (state.allMode === 'context') {
+    renderAgentChips('ctx-agent-chips', state.ctxAgentFilter)
+    renderContextResults()
+  }
 }
 
 // ─────────────────────────────── 项目
@@ -1484,6 +1741,10 @@ function bind() {
       await loadProject(card.dataset.repo)
     })
   })
+  el('all-subtabs')?.addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-all-mode]')
+    if (tab) setAllMode(tab.dataset.allMode)
+  })
   el('agent-chips').addEventListener('click', (e) => {
     const chip = e.target.closest('[data-agent]')
     if (!chip) return
@@ -1494,6 +1755,30 @@ function bind() {
     state.repoFilter = e.target.value
     renderAll()
   })
+  el('ctx-agent-chips')?.addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-agent]')
+    if (!chip) return
+    state.ctxAgentFilter = chip.dataset.agent || null
+    renderAgentChips('ctx-agent-chips', state.ctxAgentFilter)
+  })
+  el('ctx-search')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') guard(runContextSearch, '上下文搜索失败：')
+  })
+  el('btn-ctx-search')?.addEventListener('click', () => guard(runContextSearch, '上下文搜索失败：'))
+  el('btn-ctx-abort')?.addEventListener('click', () => guard(abortContextSearch))
+  el('ctx-results')?.addEventListener('click', (e) => {
+    const card = e.target.closest('[data-ctx-key]')
+    if (!card) return
+    const repo = card.dataset.ctxRepo
+    const key = card.dataset.ctxKey
+    if (!key) return
+    guard(async () => {
+      switchTab('project')
+      if (repo) await loadProject(repo)
+      await openSession(key)
+    }, '打开会话失败：')
+  })
+  el('btn-abort')?.addEventListener('click', () => guard(abortLoading))
 
   el('btn-custom-add')?.addEventListener('click', () => guard(() => editCustomAgent(null, -1)))
   el('custom-agents-list')?.addEventListener('click', (e) => {

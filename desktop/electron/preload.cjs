@@ -15,7 +15,14 @@ contextBridge.exposeInMainWorld('ass', {
   taskView: (repo, name) => ipcRenderer.invoke('ass:taskView', { repo, name }),
   sessionDetail: (repo, key) => ipcRenderer.invoke('ass:sessionDetail', { repo, key }),
   brief: (repo, ref) => ipcRenderer.invoke('ass:brief', { repo, ref }),
-  search: (q, repo) => ipcRenderer.invoke('ass:search', { q, repo }),
+  search: (q, opts) =>
+    ipcRenderer.invoke('ass:search', typeof opts === 'string' ? { q, repo: opts } : { q, ...(opts || {}) }),
+  onSearchProgress: (cb) => {
+    const handler = (_e, p) => cb(p)
+    ipcRenderer.on('ass:search-progress', handler)
+    return () => ipcRenderer.removeListener('ass:search-progress', handler)
+  },
+  abort: () => ipcRenderer.invoke('ass:abort'),
 
   ctxAdd: (repo, kind, text) => ipcRenderer.invoke('ass:ctxAdd', { repo, kind, text }),
   ctxDone: (repo, id) => ipcRenderer.invoke('ass:ctxDone', { repo, id }),
